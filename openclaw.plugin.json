@@ -1,0 +1,92 @@
+{
+  "id": "openclaw-mao",
+  "name": "Multi-Agent Orchestrator",
+  "description": "在 OpenClaw 上派发、追踪、校验、review 多 agent 协作任务。基于 branch-per-agent + worktree 隔离 + git 强校验 + Claude Code 智能 review。",
+  "version": "0.1.0",
+  "kind": "orchestrator",
+  "skills": ["skills"],
+
+  "commandAliases": [
+    { "name": "mao", "cliCommand": "mao" }
+  ],
+
+  "contracts": {
+    "tools": [
+      "mao_dispatch",
+      "mao_status",
+      "mao_list",
+      "mao_cancel",
+      "mao_cleanup",
+      "mao_merge",
+      "mao_review_bundle",
+      "mao_review_result"
+    ]
+  },
+
+  "uiHints": {
+    "concurrencyLimit": {
+      "label": "Concurrency Limit",
+      "placeholder": "3",
+      "help": "同时跑的 agent 数（默认 3，BLOCKED 不占名额）"
+    },
+    "timeouts": {
+      "label": "Type-tiered Timeouts",
+      "advanced": true,
+      "help": "按 type 分级 timeout（分钟）：bugfix/feature/refactor/plan-doc"
+    },
+    "planGateKeywords": {
+      "label": "Plan-mode Trigger Keywords",
+      "advanced": true,
+      "help": "命中即拒绝直接派 impl，强制先派 plan-doc"
+    }
+  },
+
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "concurrencyLimit": { "type": "integer", "default": 3 },
+      "branchPrefix":     { "type": "string",  "default": "agent" },
+      "workspaceRoot":    { "type": "string",  "default": "~/.openclaw/workspace", "description": "Git repo root that holds the workspace where worktrees are created. Tilde is expanded at runtime." },
+      "verifyMode":       { "type": "string",  "enum": ["skip","git"], "default": "git", "description": "skip = bypass VERIFYING (e2e/dev only); git = real three-check" },
+      "timeouts": {
+        "type": "object",
+        "properties": {
+          "bugfix":   { "type": "integer", "default": 15 },
+          "feature":  { "type": "integer", "default": 60 },
+          "refactor": { "type": "integer", "default": 120 },
+          "planDoc":  { "type": "integer", "default": 30 }
+        }
+      },
+      "highPriorityMultiplier": { "type": "number",  "default": 1.5 },
+      "verifyingTimeoutMin":    { "type": "integer", "default": 5 },
+      "stuckHeartbeatMin":      { "type": "integer", "default": 30 },
+      "diskAlertGiB":           { "type": "number",  "default": 5, "description": "Total worktrees/ size in GiB to trigger Discord disk alert (0 disables)" },
+      "planGateKeywords": {
+        "type": "array",
+        "items": { "type": "string" },
+        "default": ["重构","迁移","替换","refactor","migrate","replace","框架替换"]
+      },
+      "reviewRequiredTypes": {
+        "type": "array",
+        "items": { "type": "string", "enum": ["feature","refactor","plan-doc","bugfix"] },
+        "default": ["feature","refactor","plan-doc"]
+      },
+      "retry": {
+        "type": "object",
+        "properties": {
+          "running":   { "type": "integer", "default": 3 },
+          "review":    { "type": "integer", "default": 1 },
+          "verifying": { "type": "integer", "default": 0 }
+        }
+      },
+      "discordChannel": {
+        "type": "string",
+        "description": "OpenClaw channel id（在 channels 子系统配置）"
+      }
+    },
+    "required": []
+  },
+
+  "providerEndpoints": []
+}

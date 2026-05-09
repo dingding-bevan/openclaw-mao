@@ -1,0 +1,45 @@
+{
+  "name": "openclaw-mao",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Multi-Agent Orchestrator plugin for OpenClaw — branch-per-agent + worktree isolation + git verification + Claude Code review",
+  "license": "Apache-2.0",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "openclaw.plugin.json",
+    "skills"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.3.0"
+  },
+  "openclaw": {
+    "extensions": [
+      "./dist/index.js"
+    ],
+    "compat": {
+      "pluginApi": ">=2026.4.24",
+      "minGatewayVersion": ">=2026.4.24"
+    },
+    "build": {
+      "openclawVersion": "2026.4.24",
+      "pluginSdkVersion": "2026.4.24"
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "tsup": "^8.5.0",
+    "typescript": "^5.8.3"
+  }
+}
