@@ -240,10 +240,12 @@ const maoPlugin = definePluginEntry({
           .action((taskId: string, opts: { dryRun?: boolean; cleanup?: boolean }) => {
             const cfg = (api.pluginConfig ?? {}) as Record<string, unknown>;
             const workspaceRoot = expandHome((cfg.workspaceRoot as string) ?? "~/.openclaw/workspace");
+            const baseBranch = (cfg.baseBranch as string) ?? "main";
             const result = Merger.merge(api, taskId, {
               dryRun: opts.dryRun,
               noCleanup: opts.cleanup === false, // commander auto-converts --no-cleanup to cleanup:false
               workspaceRoot,
+              baseBranch,
             });
             console.log(JSON.stringify(result, null, 2));
             if (!result.ok) process.exitCode = 1;
@@ -305,7 +307,9 @@ const maoPlugin = definePluginEntry({
           .argument("<task-id>", "mao task id")
           .option("--json", "JSON output (always JSON)")
           .action((taskId: string) => {
-            const bundle = ReviewerBridge.prepareBundle(api, taskId);
+            const cfg = (api.pluginConfig ?? {}) as Record<string, unknown>;
+            const baseBranch = (cfg.baseBranch as string) ?? "main";
+            const bundle = ReviewerBridge.prepareBundle(api, taskId, baseBranch);
             console.log(JSON.stringify(bundle, null, 2));
             if (!bundle.ok) process.exitCode = 1;
           });

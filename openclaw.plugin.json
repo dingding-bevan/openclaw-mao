@@ -47,6 +47,7 @@
     "properties": {
       "concurrencyLimit": { "type": "integer", "default": 3 },
       "branchPrefix":     { "type": "string",  "default": "agent" },
+      "baseBranch":       { "type": "string",  "default": "main", "description": "Long-term branch that mao tasks branch from and merge into. Use a dedicated branch like 'mao-main' to isolate mao activity from the project's primary main branch." },
       "workspaceRoot":    { "type": "string",  "default": "~/.openclaw/workspace", "description": "Git repo root that holds the workspace where worktrees are created. Tilde is expanded at runtime." },
       "verifyMode":       { "type": "string",  "enum": ["skip","git"], "default": "git", "description": "skip = bypass VERIFYING (e2e/dev only); git = real three-check" },
       "timeouts": {

@@ -49,6 +49,7 @@ function defaultBranch(taskId: string, assignee: string, override?: string): str
 
 interface ResolvedConfig {
   workspaceRoot: string;
+  baseBranch: string;
   verifyMode: VerifyMode;
   concurrencyLimit: number;
   highPriorityMultiplier: number;
@@ -58,6 +59,7 @@ function readConfig(api: OpenClawPluginApi): ResolvedConfig {
   const cfg = (api.pluginConfig ?? {}) as Record<string, unknown>;
   return {
     workspaceRoot: expandHome((cfg.workspaceRoot as string) ?? "~/.openclaw/workspace"),
+    baseBranch: (cfg.baseBranch as string) ?? "main",
     verifyMode: (cfg.verifyMode as VerifyMode) ?? "git",
     concurrencyLimit: (cfg.concurrencyLimit as number) ?? 3,
     highPriorityMultiplier: (cfg.highPriorityMultiplier as number) ?? 1.5,
@@ -265,7 +267,7 @@ export const Dispatcher = {
     Tracker.update(row.task_id, { sub_status: "dispatch", dispatched_at: new Date().toISOString() });
     let worktreePath: string;
     try {
-      const wt = Worktree.create(cfg.workspaceRoot, row.assignee, row.task_id, row.branch!);
+      const wt = Worktree.create(cfg.workspaceRoot, row.assignee, row.task_id, row.branch!, cfg.baseBranch);
       worktreePath = wt.worktreePath;
       Tracker.update(row.task_id, { worktree_path: worktreePath });
       api.logger.info(`openclaw-mao: worktree ready ${worktreePath} (task=${row.task_id})`);

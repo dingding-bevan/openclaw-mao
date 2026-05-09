@@ -30,7 +30,7 @@ function gitSync(cwd: string, args: string[]): { ok: boolean; stdout: string; st
 }
 
 export const ReviewerBridge = {
-  prepareBundle(api: OpenClawPluginApi, taskId: string): ReviewBundle {
+  prepareBundle(api: OpenClawPluginApi, taskId: string, baseBranch: string = "main"): ReviewBundle {
     const task = Tracker.get(taskId);
     if (!task) {
       return {
@@ -52,9 +52,9 @@ export const ReviewerBridge = {
     let diff: string | null = null;
     let diffStat: string | null = null;
     if (task.worktree_path && task.branch && existsSync(task.worktree_path)) {
-      const baseRef = gitSync(task.worktree_path, ["rev-parse", "--verify", "origin/main"]).ok
-        ? "origin/main"
-        : "main";
+      const baseRef = gitSync(task.worktree_path, ["rev-parse", "--verify", `origin/${baseBranch}`]).ok
+        ? `origin/${baseBranch}`
+        : baseBranch;
       const d = gitSync(task.worktree_path, ["diff", `${baseRef}...HEAD`]);
       const s = gitSync(task.worktree_path, ["diff", "--stat", `${baseRef}...HEAD`]);
       if (d.ok) diff = d.stdout;

@@ -12,16 +12,16 @@ function gitSync(cwd: string, args: string[]): { ok: boolean; stdout: string; st
 }
 
 export const Worktree = {
-  create(workspaceRoot: string, agentId: string, taskId: string, branch: string): WorktreeRef {
+  create(workspaceRoot: string, agentId: string, taskId: string, branch: string, baseBranch: string = "main"): WorktreeRef {
     if (!existsSync(`${workspaceRoot}/.git`)) {
       throw new Error(`workspace is not a git repo: ${workspaceRoot}`);
     }
     const worktreePath = `${workspaceRoot}/worktrees/${agentId}-${taskId}`;
 
-    // 1. branch from origin/main if exists, else local main
-    const baseRef = gitSync(workspaceRoot, ["rev-parse", "--verify", "origin/main"]).ok
-      ? "origin/main"
-      : "main";
+    // 1. branch from origin/<baseBranch> if exists, else local <baseBranch>
+    const baseRef = gitSync(workspaceRoot, ["rev-parse", "--verify", `origin/${baseBranch}`]).ok
+      ? `origin/${baseBranch}`
+      : baseBranch;
 
     const branchExists = gitSync(workspaceRoot, ["rev-parse", "--verify", branch]).ok;
     if (!branchExists) {

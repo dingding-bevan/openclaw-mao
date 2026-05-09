@@ -9,6 +9,7 @@ export interface MergeOptions {
   dryRun?: boolean;
   noCleanup?: boolean;
   workspaceRoot: string;
+  baseBranch?: string;
 }
 
 export interface MergeResult {
@@ -57,7 +58,8 @@ export const Merger = {
     }
 
     // 1. Diff stat + commits (always reported)
-    const baseRef = gitSync(row.worktree_path, ["rev-parse", "--verify", "origin/main"]).ok ? "origin/main" : "main";
+    const baseBranch = opts.baseBranch ?? "main";
+    const baseRef = gitSync(row.worktree_path, ["rev-parse", "--verify", `origin/${baseBranch}`]).ok ? `origin/${baseBranch}` : baseBranch;
     const diffStat = gitSync(row.worktree_path, ["diff", "--stat", `${baseRef}...HEAD`]).stdout.trim();
     const log = gitSync(row.worktree_path, ["log", `${baseRef}..HEAD`, "--oneline"]).stdout.trim();
     const commits = log ? log.split("\n") : [];
@@ -86,26 +88,26 @@ export const Merger = {
       };
     }
 
-    // 3. Fast-forward merge into main on the workspace root, then push
-    const fetch = gitSync(opts.workspaceRoot, ["fetch", "origin", "main"]);
+    // 3. Fast-forward merge into baseBranch on the workspace root, then push
+    const fetch = gitSync(opts.workspaceRoot, ["fetch", "origin", baseBranch]);
     if (!fetch.ok) {
-      return { ok: false, task_id: taskId, diff_stat: diffStat, commits, ci, error: `git fetch failed: ${fetch.stderr}` };
+      return { ok: false, task_id: taskId, diff_stat: diffStat, commits, ci, error: `git fetch origin ${baseBranch} failed: ${fetch.stderr}` };
     }
-    const checkout = gitSync(opts.workspaceRoot, ["checkout", "main"]);
+    const checkout = gitSync(opts.workspaceRoot, ["checkout", baseBranch]);
     if (!checkout.ok) {
-      return { ok: false, task_id: taskId, diff_stat: diffStat, commits, ci, error: `git checkout main failed: ${checkout.stderr}` };
+      return { ok: false, task_id: taskId, diff_stat: diffStat, commits, ci, error: `git checkout ${baseBranch} failed: ${checkout.stderr}` };
     }
-    const pull = gitSync(opts.workspaceRoot, ["pull", "--ff-only", "origin", "main"]);
+    const pull = gitSync(opts.workspaceRoot, ["pull", "--ff-only", "origin", baseBranch]);
     if (!pull.ok) {
-      return { ok: false, task_id: taskId, diff_stat: diffStat, commits, ci, error: `git pull --ff-only failed: ${pull.stderr}` };
+      return { ok: false, task_id: taskId, diff_stat: diffStat, commits, ci, error: `git pull --ff-only origin ${baseBranch} failed: ${pull.stderr}` };
     }
     const merge = gitSync(opts.workspaceRoot, ["merge", "--ff-only", row.branch]);
     if (!merge.ok) {
       return { ok: false, task_id: taskId, diff_stat: diffStat, commits, ci, error: `git merge --ff-only failed: ${merge.stderr}` };
     }
-    const push = gitSync(opts.workspaceRoot, ["push", "origin", "main"]);
+    const push = gitSync(opts.workspaceRoot, ["push", "origin", baseBranch]);
     if (!push.ok) {
-      return { ok: false, task_id: taskId, diff_stat: diffStat, commits, ci, error: `git push origin main failed: ${push.stderr}` };
+      return { ok: false, task_id: taskId, diff_stat: diffStat, commits, ci, error: `git push origin ${baseBranch} failed: ${push.stderr}` };
     }
 
     // 4. Cleanup unless --no-cleanup
@@ -115,7 +117,7 @@ export const Merger = {
       cleaned = true;
     }
 
-    Notifier.sendDiscord(api, `✅ mao merge completed: ${taskId} (${row.type} → main, ${commits.length} commits)`);
+    Notifier.sendDiscord(api, `✅ mao merge completed: ${taskId} (${row.type} → ${baseBranch}, ${commits.length} commits)`);
 
     return {
       ok: true,
