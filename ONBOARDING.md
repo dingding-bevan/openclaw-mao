@@ -96,17 +96,21 @@ openclaw mao setup
 ```
 
 This:
-1. Registers three built-in agents (`opencode-dev`, `kimi-bugfix`, `orchestrator`) by
-   spawning `openclaw agents add --non-interactive --workspace ... --model ...` for each.
-   Idempotent — already-existing agents are skipped.
-2. Registers a 5-minute monitor cron job via `openclaw cron add` that calls
-   `openclaw mao monitor-tick`. Pass `--skip-cron` to skip step 2 if you'd rather invoke
-   monitor manually.
+1. Verifies the external CLIs `kimi` and `opencode` are reachable on PATH and respond to
+   `--version` (PATH augmented with `/home/admin/.local/bin:/home/admin/.npm-global/bin` at
+   spawn time).
+2. **Cron is currently skipped** with a clear reason: OpenClaw's cron only supports
+   `--agent --message` payloads, not raw shell commands like `openclaw mao monitor-tick`.
+   Schedule it manually via host crontab if you want periodic STUCK detection:
+   ```cron
+   */5 * * * * /home/admin/.npm-global/bin/openclaw mao monitor-tick >/dev/null 2>&1
+   ```
 
 Verify:
 ```bash
-openclaw agents list                  # should show the 3 agents
-openclaw cron list                    # should show "openclaw-mao-monitor"
+openclaw mao setup                    # cli.ok=true and cron.skipped=true
+kimi --version                        # confirms Kimi Code CLI works
+opencode --version                    # confirms OpenCode CLI works
 ```
 
 ---
@@ -135,7 +139,7 @@ openclaw mao parse "TASK:refactor | extract auth to its own module | priority:hi
 ```bash
 openclaw mao dashboard                # active tasks only (table)
 openclaw mao dashboard --all          # include terminal states
-openclaw mao dashboard --agent kimi-bugfix --json
+openclaw mao dashboard --agent kimi --json
 openclaw mao status <task-id>         # full sqlite row
 ```
 

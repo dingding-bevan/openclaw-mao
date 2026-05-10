@@ -21,12 +21,15 @@ export interface DispatchInput {
   reviewRequired?: boolean;
 }
 
+// v0.2.0: assignee is the *external CLI* mao spawns, not an OpenClaw-internal agent.
+// `kimi`     → /home/admin/.local/bin/kimi (Kimi Code CLI, K2.6, user OAuth)
+// `opencode` → /home/admin/.npm-global/bin/opencode (oh-my-openagent + sisyphus 17-agent swarm)
 const ASSIGNEE_BY_TYPE: Record<TaskRow["type"], string> = {
-  bugfix:     "kimi-bugfix",
-  feature:    "opencode-dev",
-  refactor:   "opencode-dev",
-  "plan-doc": "opencode-dev",
-  review:     "orchestrator",
+  bugfix:     "kimi",
+  feature:    "opencode",
+  refactor:   "opencode",
+  "plan-doc": "opencode",
+  review:     "opencode",
 };
 
 const TIMEOUT_MIN_BY_TYPE: Record<TaskRow["type"], number> = {
@@ -53,15 +56,18 @@ interface ResolvedConfig {
   verifyMode: VerifyMode;
   concurrencyLimit: number;
   highPriorityMultiplier: number;
+  agentBinaries: { kimi: string; opencode: string };
 }
 
 function readConfig(api: OpenClawPluginApi): ResolvedConfig {
   const cfg = (api.pluginConfig ?? {}) as Record<string, unknown>;
+  const bins = (cfg.agentBinaries as { kimi?: string; opencode?: string } | undefined) ?? {};
   return {
     workspaceRoot: expandHome((cfg.workspaceRoot as string) ?? "~/.openclaw/workspace"),
     baseBranch: (cfg.baseBranch as string) ?? "main",
     verifyMode: (cfg.verifyMode as VerifyMode) ?? "git",
     concurrencyLimit: (cfg.concurrencyLimit as number) ?? 3,
+    agentBinaries: { kimi: bins.kimi ?? "kimi", opencode: bins.opencode ?? "opencode" },
     highPriorityMultiplier: (cfg.highPriorityMultiplier as number) ?? 1.5,
   };
 }
@@ -95,11 +101,12 @@ function renderContinuationPrompt(): string {
 }
 
 interface SpawnTurnIn {
-  agent: string;
-  sessionId: string;
+  agent: string;          // "kimi" or "opencode"
   message: string;
   cwd?: string;
   timeoutMs: number;
+  isResume: boolean;      // first turn: false; subsequent: true (continue session)
+  binaries: { kimi: string; opencode: string };
 }
 
 interface SpawnTurnOut {
@@ -110,19 +117,38 @@ interface SpawnTurnOut {
   finalText: string;
 }
 
-function extractFinalText(stdout: string): string {
-  // OpenClaw `agent --json` returns a JSON envelope. Try parse to extract finalAssistantVisibleText.
-  try {
-    const parsed = JSON.parse(stdout);
-    const txt = parsed?.result?.meta?.finalAssistantVisibleText;
-    if (typeof txt === "string") return txt;
-    const payloads: Array<{ text?: string }> | undefined = parsed?.result?.payloads;
-    if (Array.isArray(payloads) && payloads[0]?.text) return payloads[0].text as string;
-  } catch {
-    // not JSON; fall through
+function stripAnsi(s: string): string {
+  // eslint-disable-next-line no-control-regex
+  return s.replace(/\[[0-9;]*[a-zA-Z]/g, "");
+}
+
+function extractFinalText(stdout: string, agent: string): string {
+  const clean = stripAnsi(stdout);
+  if (agent === "kimi") {
+    // `kimi --quiet` outputs the final assistant text on first non-empty line(s),
+    // then a "To resume this session: kimi -r <uuid>" hint.
+    for (const line of clean.split("\n")) {
+      const t = line.trim();
+      if (!t) continue;
+      if (t.startsWith("To resume this session:")) break;
+      return t;
+    }
+    return "";
   }
-  // Fallback: last non-empty line of stdout.
-  const lines = stdout.split("\n").map((l) => l.trim()).filter(Boolean);
+  if (agent === "opencode") {
+    // `opencode run --format default` prints a banner ("> Sisyphus - ...") plus
+    // optional warnings, then the final assistant text. Walk from the bottom up.
+    const lines = clean.split("\n").map((l) => l.trim()).filter(Boolean);
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const l = lines[i];
+      if (l.startsWith("> ")) continue;                          // agent banner
+      if (l.startsWith("!") && /not found/.test(l)) continue;    // fallback warning
+      return l;
+    }
+    return lines.length ? lines[lines.length - 1] : "";
+  }
+  // unknown agent: fallback to last non-empty
+  const lines = clean.split("\n").map((l) => l.trim()).filter(Boolean);
   return lines.length ? lines[lines.length - 1] : "";
 }
 
@@ -144,7 +170,7 @@ async function runTurnLoop(
   worktreePath: string,
   opts: TurnLoopInput,
 ): Promise<TurnLoopOutcome> {
-  const sessionId = `mao-${row.task_id}`;
+  const cfg = readConfig(api);
   const startedAt = Date.now();
   let turnIdx = 0;
   while (turnIdx < MAX_TURNS) {
@@ -157,7 +183,14 @@ async function runTurnLoop(
     const remaining = opts.totalTimeoutMs - elapsed;
     const message = turnIdx === 1 ? opts.initialMessage : renderContinuationPrompt();
 
-    const out = await spawnAgentTurn({ agent: row.assignee, sessionId, message, cwd: worktreePath, timeoutMs: remaining });
+    const out = await spawnAgentTurn({
+      agent: row.assignee,
+      message,
+      cwd: worktreePath,
+      timeoutMs: remaining,
+      isResume: turnIdx > 1,           // continue cwd session for turn 2+
+      binaries: cfg.agentBinaries,
+    });
     if (out.killedByTimeout) return { kind: "timeout" };
     if (out.exitCode !== 0) return { kind: "agent_error", error: out.stderr || `agent exit ${out.exitCode}` };
 
@@ -171,11 +204,42 @@ async function runTurnLoop(
 
 function spawnAgentTurn(input: SpawnTurnIn): Promise<SpawnTurnOut> {
   return new Promise((resolve) => {
-    const child = spawn(
-      "openclaw",
-      ["agent", "--agent", input.agent, "--session-id", input.sessionId, "--message", input.message, "--json"],
-      { stdio: ["ignore", "pipe", "pipe"], cwd: input.cwd },
-    );
+    const cwd = input.cwd ?? process.cwd();
+    let cmd: string;
+    let args: string[];
+
+    if (input.agent === "kimi") {
+      // `kimi --quiet -w <cwd> [-C] -p <message>`
+      // -C continues the most recent session in cwd (used for turn 2+).
+      cmd = input.binaries.kimi;
+      args = ["--quiet", "-w", cwd];
+      if (input.isResume) args.push("-C");
+      args.push("-p", input.message);
+    } else if (input.agent === "opencode") {
+      // `opencode run <message> --dir <cwd> --dangerously-skip-permissions [--continue]`
+      cmd = input.binaries.opencode;
+      args = ["run", input.message, "--dir", cwd, "--dangerously-skip-permissions", "--format", "default"];
+      if (input.isResume) args.push("--continue");
+    } else {
+      resolve({
+        exitCode: -1,
+        stdout: "",
+        stderr: `unknown assignee: ${input.agent} (expected "kimi" or "opencode")`,
+        killedByTimeout: false,
+        finalText: "",
+      });
+      return;
+    }
+
+    const child = spawn(cmd, args, {
+      stdio: ["ignore", "pipe", "pipe"],
+      cwd,
+      env: {
+        ...process.env,
+        // Plugin runs under OpenClaw gateway whose PATH does not include user-local installs.
+        PATH: `/home/admin/.local/bin:/home/admin/.npm-global/bin:${process.env.PATH ?? ""}`,
+      },
+    });
     let stdout = "";
     let stderr = "";
     let killedByTimeout = false;
@@ -192,7 +256,7 @@ function spawnAgentTurn(input: SpawnTurnIn): Promise<SpawnTurnOut> {
         stdout,
         stderr,
         killedByTimeout,
-        finalText: extractFinalText(stdout),
+        finalText: extractFinalText(stdout, input.agent),
       });
     });
     child.on("error", (err) => {

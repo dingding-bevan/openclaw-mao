@@ -81,34 +81,23 @@ export const Monitor = {
   },
 
   /**
-   * Idempotent: register a cron job that fires `openclaw mao monitor-tick` every 5 minutes.
-   * Called from `mao setup` (NOT from register(api) — would deadlock).
+   * v0.2.0: OpenClaw `cron add` is an agent-message scheduler, not a generic shell-command
+   * scheduler — it only supports `--agent <id> --message <text>` payloads, no `--command`.
+   * Auto-registering `openclaw mao monitor-tick` therefore isn't possible without wrapping
+   * monitor-tick inside a dedicated agent (out of scope for v0.2.0).
+   *
+   * For now we no-op and tell the user to schedule it via host crontab or systemd user timer.
+   * `mao setup` reports skipped instead of failing.
+   *
+   * Manual registration example:
+   *   crontab -e
+   *   * /5 * * * * /home/admin/.npm-global/bin/openclaw mao monitor-tick >/dev/null 2>&1
    */
-  ensureCronRegistered(api: OpenClawPluginApi): { ok: boolean; created?: boolean; existed?: boolean; error?: string } {
-    // Check existing cron jobs for our id
-    const list = spawnSync("openclaw", ["cron", "list", "--json"], { encoding: "utf8" });
-    if (list.status === 0) {
-      try {
-        const parsed = JSON.parse(list.stdout);
-        const jobs: any[] = Array.isArray(parsed) ? parsed : parsed.jobs ?? parsed.crons ?? [];
-        if (jobs.some((j) => (j.id ?? j.name ?? "").includes("openclaw-mao-monitor"))) {
-          return { ok: true, existed: true };
-        }
-      } catch {
-        // fall through and try add anyway
-      }
-    }
-
-    // Try add. Different OpenClaw versions accept different flags; we'll try the common form.
-    const add = spawnSync(
-      "openclaw",
-      ["cron", "add", "--name", "openclaw-mao-monitor", "--schedule", "*/5 * * * *", "--command", "openclaw mao monitor-tick"],
-      { encoding: "utf8" },
-    );
-    if (add.status !== 0) {
-      api.logger.warn(`openclaw-mao: ensureCronRegistered failed: ${add.stderr ?? `exit ${add.status}`}`);
-      return { ok: false, error: add.stderr ?? `exit ${add.status}` };
-    }
-    return { ok: true, created: true };
+  ensureCronRegistered(api: OpenClawPluginApi): { ok: boolean; skipped: boolean; reason: string } {
+    const reason =
+      "OpenClaw cron only supports --agent --message scheduling, not raw shell commands. " +
+      "Schedule `openclaw mao monitor-tick` via host crontab or systemd user timer instead. See README.";
+    api.logger.info(`openclaw-mao: ensureCronRegistered skipped — ${reason}`);
+    return { ok: true, skipped: true, reason };
   },
 };

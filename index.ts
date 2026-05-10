@@ -47,15 +47,15 @@ const maoPlugin = definePluginEntry({
 
         mao
           .command("setup")
-          .description("Register the 3 built-in agents + monitor cron. Idempotent.")
+          .description("Verify external CLI binaries (kimi, opencode) are reachable + register monitor cron. Idempotent.")
           .option("--json", "JSON output")
           .option("--skip-cron", "do not register the monitor cron job")
           .action((opts: { skipCron?: boolean }) => {
             const workspaceRoot = api.resolvePath("data");
-            const agents = runSetup(api, workspaceRoot);
+            const cli = runSetup(api, workspaceRoot);
             const cron = opts.skipCron ? { ok: true, existed: true } : Monitor.ensureCronRegistered(api);
-            console.log(JSON.stringify({ ok: agents.ok && cron.ok, agents, cron }, null, 2));
-            if (!agents.ok || !cron.ok) process.exitCode = 1;
+            console.log(JSON.stringify({ ok: cli.ok && cron.ok, cli, cron }, null, 2));
+            if (!cli.ok || !cron.ok) process.exitCode = 1;
           });
 
         mao

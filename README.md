@@ -11,11 +11,22 @@ and usage.
 
 ## What it does
 
-`openclaw-mao` lets you run several coding agents in parallel without them stomping on each
-other. You dispatch a task; the plugin creates an isolated git worktree on a fresh branch,
-spawns the assigned agent (`opencode-dev` / `kimi-bugfix` / `orchestrator`) in that worktree,
-runs a multi-turn loop until the agent says `DONE:` or `CLARIFY:`, verifies the result with three
-git checks, optionally hands off to a human reviewer, and finally fast-forward-merges into main.
+`openclaw-mao` lets you orchestrate the **independent coding-agent CLIs already installed on
+your VPS** — Kimi Code CLI (`kimi`) and OpenCode (`opencode`, with its built-in 17-agent
+sisyphus swarm). You dispatch a task; the plugin creates an isolated git worktree on a fresh
+branch, spawns the assigned external CLI (`kimi --quiet` for bugfix, `opencode run` for
+everything else), runs a multi-turn loop until the agent says `DONE:` or `CLARIFY:`, verifies
+the result with three git checks, optionally hands off to a human reviewer, and finally
+fast-forward-merges into the configured base branch.
+
+> **v0.2.0 architectural correction**: earlier versions registered "agents" inside OpenClaw
+> (`openclaw agents add kimi-bugfix --model moonshot/kimi-k2.5`) and dispatched via
+> `openclaw agent --agent ...`, which actually ran OpenClaw's *internal* Pi runtime against a
+> direct LLM API — completely bypassing the user's pre-configured Kimi Code / OpenCode CLIs
+> with their AGENTS.md, OAuth-billed model plans, and audit trails. v0.2.0 spawns the real
+> external binaries instead. Existing sqlite rows from before v0.2.0 still show
+> `kimi-bugfix / opencode-dev / orchestrator` in their `assignee` column for historical
+> reference.
 
 ```
 dispatch → DONE → verifying → pushed → reviewing
@@ -94,8 +105,11 @@ systemctl --user restart openclaw-gateway.service
 openclaw mao setup
 ```
 
-Registers the 3 built-in agents (`opencode-dev` / `kimi-bugfix` / `orchestrator`) and the
-5-minute monitor cron job. Idempotent.
+v0.2.0+: Verifies the external CLI binaries `kimi` and `opencode` are reachable on PATH and
+respond to `--version`. (No longer registers OpenClaw-internal agents — that was the v0.1
+architectural mistake.) Cron registration is currently skipped because OpenClaw's cron only
+supports `--agent --message` payloads, not raw shell commands; schedule `openclaw mao
+monitor-tick` via host crontab if you want periodic STUCK detection.
 
 ---
 

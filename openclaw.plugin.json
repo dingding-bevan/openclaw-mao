@@ -50,6 +50,14 @@
       "baseBranch":       { "type": "string",  "default": "main", "description": "Long-term branch that mao tasks branch from and merge into. Use a dedicated branch like 'mao-main' to isolate mao activity from the project's primary main branch." },
       "workspaceRoot":    { "type": "string",  "default": "~/.openclaw/workspace", "description": "Git repo root that holds the workspace where worktrees are created. Tilde is expanded at runtime." },
       "verifyMode":       { "type": "string",  "enum": ["skip","git"], "default": "git", "description": "skip = bypass VERIFYING (e2e/dev only); git = real three-check" },
+      "agentBinaries": {
+        "type": "object",
+        "description": "Override the binaries mao spawns. Defaults to `kimi` and `opencode` resolved via PATH (PATH augmented with /home/admin/.local/bin and /home/admin/.npm-global/bin at spawn time).",
+        "properties": {
+          "kimi":     { "type": "string", "default": "kimi",     "description": "Path or name of Kimi Code CLI binary" },
+          "opencode": { "type": "string", "default": "opencode", "description": "Path or name of OpenCode CLI binary" }
+        }
+      },
       "timeouts": {
         "type": "object",
         "properties": {
