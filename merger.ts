@@ -10,6 +10,7 @@ export interface MergeOptions {
   noCleanup?: boolean;
   workspaceRoot: string;
   baseBranch?: string;
+  force?: boolean;     // v0.2.1 wave 2: bypass sub_status check (for `mao accept`)
 }
 
 export interface MergeResult {
@@ -44,12 +45,21 @@ export const Merger = {
     if (!row) return { ok: false, task_id: taskId, error: "task not found" };
 
     const allowedStates: TaskRow["sub_status"][] = ["completed", "pushed"];
-    if (!allowedStates.includes(row.sub_status)) {
+    if (!opts.force && !allowedStates.includes(row.sub_status)) {
       return {
         ok: false,
         task_id: taskId,
         sub_status: row.sub_status,
-        error: `task sub_status=${row.sub_status}, expected completed|pushed`,
+        error: `task sub_status=${row.sub_status}, expected completed|pushed (use mao accept to bypass for stuck states)`,
+      };
+    }
+    // hard block: never accept a cancelled task even with force
+    if (opts.force && row.sub_status === "cancelled") {
+      return {
+        ok: false,
+        task_id: taskId,
+        sub_status: row.sub_status,
+        error: "cannot accept a cancelled task",
       };
     }
     if (!row.branch) return { ok: false, task_id: taskId, error: "task has no branch" };

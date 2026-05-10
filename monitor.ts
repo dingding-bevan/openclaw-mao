@@ -3,6 +3,8 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { Tracker, type TaskRow } from "./tracker.ts";
 import { Notifier } from "./notifier.ts";
 import { Verifier, type VerifyMode } from "./verifier.ts";
+import { extractSessionId } from "./dispatcher.ts";
+import { Worktree } from "./worktree.ts";
 
 export interface MonitorOpts {
   stuckHeartbeatMin: number;
@@ -11,6 +13,8 @@ export interface MonitorOpts {
   diskAlertGiB?: number;
   baseBranch?: string;       // for human-work completion check
   verifyMode?: VerifyMode;   // for verifier on auto-promoted manual tasks
+  agentBinaries?: { kimi: string; opencode: string };
+  worktreeRetentionHours?: number;   // 0 disables retention sweep
 }
 
 export interface MonitorResult {
@@ -18,6 +22,7 @@ export interface MonitorResult {
   stuck_running: { task_id: string; age_min: number }[];
   stuck_verifying: { task_id: string; age_min: number }[];
   human_work_promoted: { task_id: string; new_status: string }[];
+  worktrees_pruned: { task_id: string; age_hours: number }[];
   failed_count: number;
   disk: { worktrees_bytes: number; threshold_bytes: number; alert: boolean } | null;
 }
@@ -56,7 +61,7 @@ function ageMinutes(iso: string | null): number {
 
 export const Monitor = {
   tick(api: OpenClawPluginApi, opts: MonitorOpts): MonitorResult {
-    const out: MonitorResult = { ran_at: new Date().toISOString(), stuck_running: [], stuck_verifying: [], human_work_promoted: [], failed_count: 0, disk: null };
+    const out: MonitorResult = { ran_at: new Date().toISOString(), stuck_running: [], stuck_verifying: [], human_work_promoted: [], worktrees_pruned: [], failed_count: 0, disk: null };
 
     // 1. Running > stuckHeartbeatMin → mark failed (treated as `lost` per OpenClaw TaskFlow status enum)
     const running = Tracker.list({ sub_status: "running" });
@@ -103,6 +108,12 @@ export const Monitor = {
 
         api.logger.info(`openclaw-mao: monitor detected human work complete on task=${t.task_id}`);
 
+        // v0.2.1 wave 2: capture external session id (best-effort) before promoting state.
+        if (!t.external_session_id && opts.agentBinaries) {
+          const sid = extractSessionId(t.assignee, "", t.worktree_path, opts.agentBinaries);
+          if (sid) Tracker.update(t.task_id, { external_session_id: sid });
+        }
+
         // Run verifier (same as auto-mode dispatcher.run path)
         Tracker.update(t.task_id, { sub_status: "verifying" });
         const verdict = Verifier.verify(t.worktree_path, t.branch, verifyMode);
@@ -141,7 +152,34 @@ export const Monitor = {
       }
     }
 
-    // 4. Disk usage check on workspaceRoot/worktrees (best-effort via `du -sb`)
+    // 4. Worktree retention sweep — auto-prune terminal tasks whose worktree+branch
+    // have been kept past worktreeRetentionHours so users can no longer resume in tui.
+    const retentionH = opts.worktreeRetentionHours ?? 24;
+    if (retentionH > 0 && opts.workspaceRoot) {
+      const cutoffMs = Date.now() - retentionH * 3_600_000;
+      const terminal: TaskRow["sub_status"][] = ["completed", "failed", "cancelled"];
+      const candidates = (Tracker.list() as TaskRow[]).filter(
+        (t) =>
+          terminal.includes(t.sub_status) &&
+          t.completed_at &&
+          new Date(t.completed_at).getTime() < cutoffMs &&
+          t.worktree_path,
+      );
+      for (const t of candidates) {
+        try {
+          Worktree.remove(opts.workspaceRoot, t.assignee, t.task_id, t.branch ?? "");
+          const ageH = t.completed_at
+            ? Math.floor((Date.now() - new Date(t.completed_at).getTime()) / 3_600_000)
+            : 0;
+          out.worktrees_pruned.push({ task_id: t.task_id, age_hours: ageH });
+          api.logger.info(`openclaw-mao: monitor pruned task ${t.task_id} worktree (age ${ageH}h, retention ${retentionH}h)`);
+        } catch (err) {
+          api.logger.warn(`openclaw-mao: monitor prune failed for ${t.task_id}: ${(err as Error).message}`);
+        }
+      }
+    }
+
+    // 5. Disk usage check on workspaceRoot/worktrees (best-effort via `du -sb`)
     if (opts.workspaceRoot && opts.diskAlertGiB !== undefined && opts.diskAlertGiB > 0) {
       const wtPath = `${opts.workspaceRoot}/worktrees`;
       const r = spawnSync("du", ["-sb", wtPath], { encoding: "utf8", timeout: 30_000 });

@@ -71,6 +71,7 @@
       "verifyingTimeoutMin":    { "type": "integer", "default": 5 },
       "stuckHeartbeatMin":      { "type": "integer", "default": 30 },
       "diskAlertGiB":           { "type": "number",  "default": 5, "description": "Total worktrees/ size in GiB to trigger Discord disk alert (0 disables)" },
+      "worktreeRetentionHours": { "type": "integer", "default": 24, "description": "How long to keep a terminal task's worktree+branch around for tui resume after the task finishes. Monitor auto-prunes after this. 0 = no retention (cleanup immediately)." },
       "planGateKeywords": {
         "type": "array",
         "items": { "type": "string" },

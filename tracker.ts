@@ -40,6 +40,7 @@ export interface TaskRow {
   reviewed_at: string | null;
   clarify_question: string | null;
   mode: DispatchMode;
+  external_session_id: string | null;   // v0.2.1 wave 2: opencode/kimi session uuid for tui resume
   created_at: string;
   dispatched_at: string | null;
   completed_at: string | null;
@@ -81,6 +82,9 @@ const SCHEMA = [
 
   // v4: v0.2.1 manual dispatch mode
   `ALTER TABLE tasks ADD COLUMN mode TEXT NOT NULL DEFAULT 'auto';`,
+
+  // v5: v0.2.1 wave 2 — external CLI session id for tui resume
+  `ALTER TABLE tasks ADD COLUMN external_session_id TEXT;`,
 ];
 
 let handle: SqliteHandle | null = null;
@@ -115,17 +119,17 @@ export const Tracker = {
           task_id, type, priority, description, assignee, branch, worktree_path,
           sub_status, openclaw_task_id, openclaw_parent_task_id, plan_doc,
           review_required, retry_run, retry_review, result_json, error,
-          review_verdict, review_feedback, reviewed_at, clarify_question, mode,
+          review_verdict, review_feedback, reviewed_at, clarify_question, mode, external_session_id,
           created_at, dispatched_at, completed_at
         ) VALUES (
           @task_id, @type, @priority, @description, @assignee, @branch, @worktree_path,
           @sub_status, @openclaw_task_id, @openclaw_parent_task_id, @plan_doc,
           @review_required, @retry_run, @retry_review, @result_json, @error,
-          @review_verdict, @review_feedback, @reviewed_at, @clarify_question, @mode,
+          @review_verdict, @review_feedback, @reviewed_at, @clarify_question, @mode, @external_session_id,
           @created_at, @dispatched_at, @completed_at
         )`,
       )
-      .run({ ...full, review_verdict: null, review_feedback: null, reviewed_at: null, clarify_question: null, mode: full.mode ?? "auto" });
+      .run({ ...full, review_verdict: null, review_feedback: null, reviewed_at: null, clarify_question: null, mode: full.mode ?? "auto", external_session_id: null });
     return full;
   },
 

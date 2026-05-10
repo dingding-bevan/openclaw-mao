@@ -58,6 +58,7 @@ export const Dashboard = {
       pad("mode", 6),
       pad("agent", 14),
       pad("sub_status", 22),
+      pad("resume", 9),
       pad("age", 8),
       pad("retry", 6),
       "branch",
@@ -70,6 +71,7 @@ export const Dashboard = {
     lines.push(sep);
 
     for (const r of rows) {
+      const resume = r.worktree_path && r.external_session_id ? "tui-ready" : (r.worktree_path ? "wt-only" : "-");
       lines.push(
         [
           pad(shortId(r.task_id), 10),
@@ -78,6 +80,7 @@ export const Dashboard = {
           pad(r.mode ?? "auto", 6),
           pad(r.assignee, 14),
           pad(r.sub_status, 22),
+          pad(resume, 9),
           pad(ageMin(r.dispatched_at ?? r.created_at), 8),
           pad(`${r.retry_run}/${r.retry_review}`, 6),
           r.branch ?? "-",

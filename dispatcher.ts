@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 
@@ -124,6 +124,45 @@ function stripAnsi(s: string): string {
   return s.replace(/\[[0-9;]*[a-zA-Z]/g, "");
 }
 
+/**
+ * v0.2.1 wave 2: extract the external CLI session id so the user can later
+ * resume via `<cli> --session <id>` inside the worktree cwd.
+ * Returns null if anything goes wrong — silent fallback.
+ */
+export function extractSessionId(
+  agent: string,
+  stdout: string,
+  cwd: string,
+  binaries: { kimi: string; opencode: string },
+): string | null {
+  const clean = stripAnsi(stdout);
+  if (agent === "kimi") {
+    const m = clean.match(/To resume this session:\s*kimi\s+-r\s+([0-9a-f-]+)/i);
+    return m?.[1] ?? null;
+  }
+  if (agent === "opencode") {
+    const r = spawnSync(binaries.opencode, ["session", "list", "--json"], {
+      cwd,
+      encoding: "utf8",
+      timeout: 15_000,
+      env: { ...process.env, PATH: `/home/admin/.local/bin:/home/admin/.npm-global/bin:${process.env.PATH ?? ""}` },
+    });
+    if (r.status !== 0) return null;
+    try {
+      const lines = (r.stdout ?? "").split("\n");
+      const start = lines.findIndex((l) => l.trim().startsWith("[") || l.trim().startsWith("{"));
+      const jsonText = start >= 0 ? lines.slice(start).join("\n") : r.stdout;
+      const parsed = JSON.parse(jsonText);
+      const arr = Array.isArray(parsed) ? parsed : (parsed.sessions ?? parsed.data ?? []);
+      const first = arr[0];
+      return first?.id ?? first?.session_id ?? first?.sessionId ?? null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
 function extractFinalText(stdout: string, agent: string): string {
   const clean = stripAnsi(stdout);
   if (agent === "kimi") {
@@ -195,6 +234,16 @@ async function runTurnLoop(
     });
     if (out.killedByTimeout) return { kind: "timeout" };
     if (out.exitCode !== 0) return { kind: "agent_error", error: out.stderr || `agent exit ${out.exitCode}` };
+
+    // v0.2.1 wave 2: capture external session id on the first turn (free for kimi via stdout regex,
+    // requires extra spawn for opencode but cheap; silent fallback to null on any error)
+    if (turnIdx === 1 && !row.external_session_id) {
+      const sid = extractSessionId(row.assignee, out.stdout, worktreePath, cfg.agentBinaries);
+      if (sid) {
+        Tracker.update(row.task_id, { external_session_id: sid });
+        api.logger.info(`openclaw-mao: task ${row.task_id} external_session_id=${sid}`);
+      }
+    }
 
     api.logger.info(`openclaw-mao: task ${row.task_id} turn ${turnIdx} → "${out.finalText.slice(0, 80)}"`);
 
