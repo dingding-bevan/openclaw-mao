@@ -5,11 +5,12 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 function expandHome(p: string): string {
   return p.startsWith("~/") ? `${homedir()}/${p.slice(2)}` : p;
 }
-import { Tracker, type TaskRow } from "./tracker.ts";
+import { Tracker, type TaskRow, type DispatchMode } from "./tracker.ts";
 import { Worktree } from "./worktree.ts";
 import { Verifier, type VerifyMode } from "./verifier.ts";
 import { Chain } from "./chain.ts";
 import { Notifier } from "./notifier.ts";
+import { buildManualPlan, type ManualPlan } from "./prompt-templates.ts";
 
 export interface DispatchInput {
   type: TaskRow["type"];
@@ -19,6 +20,7 @@ export interface DispatchInput {
   planDoc?: string;
   parentTask?: string;
   reviewRequired?: boolean;
+  mode?: DispatchMode;     // v0.2.1: "auto" (default) spawns CLI; "manual" prepares worktree + prompt for tui
 }
 
 // v0.2.0: assignee is the *external CLI* mao spawns, not an OpenClaw-internal agent.
@@ -267,7 +269,7 @@ function spawnAgentTurn(input: SpawnTurnIn): Promise<SpawnTurnOut> {
 }
 
 export const Dispatcher = {
-  create(api: OpenClawPluginApi, input: DispatchInput): { ok: boolean; row?: TaskRow; error?: string } {
+  create(api: OpenClawPluginApi, input: DispatchInput): { ok: boolean; row?: TaskRow; manual_plan?: ManualPlan; error?: string } {
     const cfg = readConfig(api);
 
     // Chain validation must run before insert (cycle / depth check)
@@ -287,6 +289,7 @@ export const Dispatcher = {
     const taskId = newTaskId();
     const assignee = ASSIGNEE_BY_TYPE[input.type] ?? "opencode-dev";
     const branch = defaultBranch(taskId, assignee, input.branch);
+    const mode: DispatchMode = input.mode ?? "auto";
 
     const row = Tracker.insert({
       task_id: taskId,
@@ -303,6 +306,7 @@ export const Dispatcher = {
       result_json: null,
       error: null,
       sub_status: startSubStatus,
+      mode,
       dispatched_at: null,
       completed_at: null,
     });
@@ -312,6 +316,35 @@ export const Dispatcher = {
       return { ok: true, row };
     }
 
+    // Manual mode: create worktree, write awaiting_human_work, build prompt+ssh and return — no LLM spawn.
+    if (mode === "manual") {
+      try {
+        const wt = Worktree.create(cfg.workspaceRoot, assignee, taskId, branch, cfg.baseBranch);
+        Tracker.update(taskId, {
+          sub_status: "awaiting_human_work",
+          worktree_path: wt.worktreePath,
+          dispatched_at: new Date().toISOString(),
+        });
+        const fresh = Tracker.get(taskId)!;
+        const plan = buildManualPlan({
+          taskId,
+          type: input.type,
+          description: input.description,
+          branch,
+          worktreePath: wt.worktreePath,
+          planDoc: input.planDoc ?? null,
+        });
+        api.logger.info(`openclaw-mao: task ${taskId} → awaiting_human_work (manual mode, ${plan.recommended_agent})`);
+        return { ok: true, row: fresh, manual_plan: plan };
+      } catch (err) {
+        const msg = (err as Error).message;
+        Tracker.update(taskId, { sub_status: "failed", error: `worktree: ${msg}`, completed_at: new Date().toISOString() });
+        api.logger.warn(`openclaw-mao: worktree creation failed for manual task=${taskId}: ${msg}`);
+        return { ok: false, error: `worktree creation failed: ${msg}` };
+      }
+    }
+
+    // Auto mode: existing flow — Dispatcher.run does worktree create + spawn CLI loop.
     const active = Tracker.countActive();
     if (active <= cfg.concurrencyLimit) {
       void Dispatcher.run(api, row).catch((err) =>

@@ -7,6 +7,7 @@ export type SubStatus =
   | "pending"
   | "dispatch"
   | "running"
+  | "awaiting_human_work"   // v0.2.1: --manual mode, waiting for user to drive opencode/kimi tui
   | "verifying"
   | "pushed"
   | "reviewing"
@@ -14,6 +15,8 @@ export type SubStatus =
   | "completed"
   | "failed"
   | "cancelled";
+
+export type DispatchMode = "auto" | "manual";
 
 export interface TaskRow {
   task_id: string;
@@ -36,6 +39,7 @@ export interface TaskRow {
   review_feedback: string | null;
   reviewed_at: string | null;
   clarify_question: string | null;
+  mode: DispatchMode;
   created_at: string;
   dispatched_at: string | null;
   completed_at: string | null;
@@ -74,6 +78,9 @@ const SCHEMA = [
 
   // v3: Phase 3.5 awaiting_clarification flow
   `ALTER TABLE tasks ADD COLUMN clarify_question TEXT;`,
+
+  // v4: v0.2.1 manual dispatch mode
+  `ALTER TABLE tasks ADD COLUMN mode TEXT NOT NULL DEFAULT 'auto';`,
 ];
 
 let handle: SqliteHandle | null = null;
@@ -108,17 +115,17 @@ export const Tracker = {
           task_id, type, priority, description, assignee, branch, worktree_path,
           sub_status, openclaw_task_id, openclaw_parent_task_id, plan_doc,
           review_required, retry_run, retry_review, result_json, error,
-          review_verdict, review_feedback, reviewed_at, clarify_question,
+          review_verdict, review_feedback, reviewed_at, clarify_question, mode,
           created_at, dispatched_at, completed_at
         ) VALUES (
           @task_id, @type, @priority, @description, @assignee, @branch, @worktree_path,
           @sub_status, @openclaw_task_id, @openclaw_parent_task_id, @plan_doc,
           @review_required, @retry_run, @retry_review, @result_json, @error,
-          @review_verdict, @review_feedback, @reviewed_at, @clarify_question,
+          @review_verdict, @review_feedback, @reviewed_at, @clarify_question, @mode,
           @created_at, @dispatched_at, @completed_at
         )`,
       )
-      .run({ ...full, review_verdict: null, review_feedback: null, reviewed_at: null, clarify_question: null });
+      .run({ ...full, review_verdict: null, review_feedback: null, reviewed_at: null, clarify_question: null, mode: full.mode ?? "auto" });
     return full;
   },
 
@@ -162,7 +169,7 @@ export const Tracker = {
     if (!handle) throw new Error("Tracker not initialized");
     const row = handle.db
       .prepare(
-        "SELECT COUNT(*) AS c FROM tasks WHERE sub_status IN ('pending','dispatch','running','verifying','pushed','reviewing','awaiting_clarification')",
+        "SELECT COUNT(*) AS c FROM tasks WHERE sub_status IN ('pending','dispatch','running','awaiting_human_work','verifying','pushed','reviewing','awaiting_clarification')",
       )
       .get() as { c: number };
     return row.c;

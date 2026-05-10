@@ -80,7 +80,8 @@ const maoPlugin = definePluginEntry({
           .option("--plan-doc <path>", "required for refactor / plan-mode-gated tasks")
           .option("--parent-task <id>", "parent task id (chain)")
           .option("--review", "force review even for bugfix")
-          .option("--json", "JSON output (always JSON in current build)")
+          .option("--manual", "do not spawn LLM; prepare worktree + prompt and let user drive opencode/kimi tui")
+          .option("--json", "JSON output instead of human-readable manual plan")
           .action((opts: Record<string, string | boolean | undefined>) => {
             // 1. Resolve DispatchInput: prefer --prefix if given, else assemble from flags.
             let input: DispatchInput | null = null;
@@ -120,6 +121,7 @@ const maoPlugin = definePluginEntry({
                 reviewRequired: opts.review ? true : undefined,
               };
             }
+            if (opts.manual) input.mode = "manual";
 
             // 2. Plan-mode gate
             const cfg = (api.pluginConfig ?? {}) as Record<string, unknown>;
@@ -151,6 +153,37 @@ const maoPlugin = definePluginEntry({
               return;
             }
             const row = result.row;
+            const manualPlan = result.manual_plan;
+
+            // Manual mode: human-readable 3-step guide, unless --json
+            if (manualPlan && !opts.json) {
+              const sep = "─".repeat(72);
+              console.log(`✓ Task ${row.task_id} tracked (sub_status=${row.sub_status}, mode=manual)`);
+              console.log(`✓ Worktree:  ${row.worktree_path}`);
+              console.log(`✓ Branch:    ${row.branch} (forked from mao-main)`);
+              console.log("");
+              console.log(`${sep}\nStep 1: Open opencode/kimi tui\n${sep}`);
+              console.log("");
+              console.log(`  ${manualPlan.ssh_command}`);
+              console.log("");
+              console.log(`${sep}\nStep 2: Switch agent profile\n${sep}`);
+              console.log("");
+              console.log(`  ${manualPlan.recommended_agent}`);
+              console.log(`  ${manualPlan.next_step_hint}`);
+              console.log("");
+              console.log(`${sep}\nStep 3: Paste this prompt\n${sep}`);
+              console.log("");
+              console.log(manualPlan.prompt_to_paste);
+              console.log("");
+              console.log(`${sep}\nStep 4: When agent finishes (commit + push)\n${sep}`);
+              console.log("");
+              console.log(`  mao monitor will auto-detect within 5 min and move task to verifying.`);
+              console.log(`  To trigger immediately on host:`);
+              console.log(`     openclaw mao monitor-tick`);
+              console.log("");
+              return;
+            }
+
             console.log(
               JSON.stringify(
                 {
@@ -159,8 +192,11 @@ const maoPlugin = definePluginEntry({
                   assignee: row.assignee,
                   branch: row.branch,
                   sub_status: row.sub_status,
+                  mode: row.mode,
                   parent_task: row.openclaw_parent_task_id,
+                  worktree: row.worktree_path,
                   created_at: row.created_at,
+                  ...(manualPlan ? { manual_plan: manualPlan } : {}),
                 },
                 null,
                 2,
@@ -253,7 +289,7 @@ const maoPlugin = definePluginEntry({
 
         mao
           .command("monitor-tick")
-          .description("One-shot monitor pass: scan stuck tasks + worktrees disk usage (also called by cron)")
+          .description("One-shot monitor pass: scan stuck tasks + auto-detect manual completions + worktree disk usage")
           .option("--json", "JSON output")
           .action(() => {
             const cfg = (api.pluginConfig ?? {}) as Record<string, unknown>;
@@ -261,6 +297,8 @@ const maoPlugin = definePluginEntry({
               stuckHeartbeatMin: (cfg.stuckHeartbeatMin as number) ?? 30,
               verifyingTimeoutMin: (cfg.verifyingTimeoutMin as number) ?? 5,
               workspaceRoot: cfg.workspaceRoot as string | undefined,
+              baseBranch: (cfg.baseBranch as string | undefined) ?? "main",
+              verifyMode: (cfg.verifyMode as "skip" | "git" | undefined) ?? "git",
               diskAlertGiB: (cfg.diskAlertGiB as number | undefined) ?? 5,
             });
             console.log(JSON.stringify(result, null, 2));
