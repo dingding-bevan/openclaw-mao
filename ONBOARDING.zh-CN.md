@@ -150,6 +150,33 @@ opencode --version                    # 确认 OpenCode CLI 可用
 
 ## 5. 日常使用
 
+### 5.0 推荐工作流：以 Claude Code 为主编排师
+
+**人类不直接写 ssh 命令派任务。** 设计上的主要使用模式：
+
+| 角色 | 做什么 |
+|------|--------|
+| **你** | 在 Claude Code 会话里用自然语言说「想做 X」 |
+| **Claude Code** | 按 `~/.claude/CLAUDE.md` 的 ask-first gate 规则自动判断 `type` / `assignee` / `review_required`，组装完整 dispatch 命令，输出一行摘要：<br>「准备派 `<type>` 任务给 `<assignee>`：`<one-line description>`，review_required=`<y\|n>`，plan-doc=`<path\|none>`。**OK 就 y，改要改我。**」 |
+| **你** | 回 `y/yes/确认`，或回应调整 |
+| **Claude Code** | 用 Bash tool 通过 ssh 派 mao，记下 task_id 给你 |
+| **你** | 问「任务咋样？」 |
+| **Claude Code** | 主动跑 `mao dashboard` / `mao status` 给摘要 |
+| **任务进 `reviewing`** | Claude Code **主动**拉 `mao review-bundle` → 给契约审查 verdict 建议（pass / fail / needs-clarification + 理由） |
+| **你** | 确认 verdict |
+| **Claude Code** | 跑 `mao review-result --verdict ...`，然后问「merge 吗？」 |
+| **你** | y / n |
+| **Claude Code** | 跑 `mao merge` 或留着 |
+
+**人类的真实工作 = 用自然语言描述目标 + 在 ask-first 摘要时 y/n + 关键 review 决策。**
+不需要记 task_id、ssh 命令、子命令 flag。
+
+下面 §5.1 - §5.8 列的直接 CLI 命令是**底层接口**——主要用于：
+
+- 开发 / 调试 / 排查 mao 自身 bug
+- Claude Code 不可用时的手动 fallback
+- 一次性运维操作（清磁盘、看历史 task）
+
 ### 5.1 派任务（全自动模式）
 
 ```bash

@@ -10,9 +10,30 @@ OpenClaw 的多 Agent 编排插件 —— 派发、跟踪、校验、审查多 a
 
 ---
 
+## 使用模型
+
+本插件设计上以 **Claude Code 为主编排师**：
+
+1. **你**：在 Claude Code 会话里用自然语言说「想做 X」
+2. **Claude Code**：按 `~/.claude/CLAUDE.md` 的 ask-first-gate 规则**自动**判断
+   `type` / `assignee` / `review_required`，组装完整 dispatch 命令，先发一行摘要让你拍板
+3. **你**：回 `y/yes/确认`（或调整 description）
+4. **Claude Code**：通过 ssh 真派 mao，跟踪状态机，进 `reviewing` 时主动拉 review-bundle
+   并给契约审查 verdict 建议
+5. **你**：确认 pass / fail
+6. **Claude Code**：跑 `review-result` + `merge`，最后报结果
+
+**人类是 confirm 步骤，不是 dispatch 步骤。** 你不需要记 task_id、不需要拼 ssh 命令、不需要
+查子命令 flag——Claude Code 全替你做。
+
+底下 CLI 表 + ONBOARDING §5 列的直接命令是**底层接口**：用于开发 / 调试 mao 自身，
+或 Claude Code 不可用时的 fallback。
+
+---
+
 ## 它做什么
 
-`openclaw-mao` 让你**编排已经装在 VPS 上的两个独立 coding-agent CLI**：
+`openclaw-mao` 让你（通过 Claude Code）**编排已经装在 VPS 上的两个独立 coding-agent CLI**：
 - **`kimi`**（Kimi Code CLI，K2.6 模型 + 你 `~/.kimi/AGENTS.md` 的工作守则 + OAuth 计费套餐）
 - **`opencode`**（OpenCode CLI，内含 sisyphus 17 内部 agent swarm + 5 LLM provider）
 

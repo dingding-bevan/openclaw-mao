@@ -11,11 +11,35 @@ and usage.
 
 ---
 
+## Usage model
+
+This plugin is designed to be driven by **Claude Code as the orchestrator**:
+
+1. **You** — say in natural language what you want done, inside a Claude Code session.
+2. **Claude Code** — follows the ask-first-gate rules in `~/.claude/CLAUDE.md` to *automatically*
+   classify `type` / `assignee` / `review_required`, assemble the full dispatch command, and
+   present a one-line summary for your y/n approval.
+3. **You** — reply `y/yes/ok` (or adjust the description).
+4. **Claude Code** — ssh-dispatches the task to mao, tracks the state machine, and when the
+   task hits `reviewing`, proactively pulls the review-bundle and proposes a contract-audit
+   verdict.
+5. **You** — confirm pass / fail.
+6. **Claude Code** — calls `review-result` + `merge`, reports the outcome.
+
+**The human is the confirm step, not the dispatch step.** You don't need to remember task
+IDs, hand-craft ssh commands, or look up subcommand flags — Claude Code does all of that.
+
+The raw CLI commands in the table below (and in ONBOARDING §5) are the **low-level
+interface**: useful for developing / debugging mao itself, or as a fallback when Claude Code
+isn't available.
+
+---
+
 ## What it does
 
-`openclaw-mao` lets you orchestrate the **independent coding-agent CLIs already installed on
-your VPS** — Kimi Code CLI (`kimi`) and OpenCode (`opencode`, with its built-in 17-agent
-sisyphus swarm). You dispatch a task; the plugin creates an isolated git worktree on a fresh
+`openclaw-mao` lets you (through Claude Code) orchestrate the **independent coding-agent CLIs
+already installed on your VPS** — Kimi Code CLI (`kimi`) and OpenCode (`opencode`, with its
+built-in 17-agent sisyphus swarm). You dispatch a task; the plugin creates an isolated git worktree on a fresh
 branch, spawns the assigned external CLI (`kimi --quiet` for bugfix, `opencode run` for
 everything else), runs a multi-turn loop until the agent says `DONE:` or `CLARIFY:`, verifies
 the result with three git checks, optionally hands off to a human reviewer, and finally

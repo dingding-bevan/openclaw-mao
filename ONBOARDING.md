@@ -119,6 +119,34 @@ opencode --version                    # confirms OpenCode CLI works
 
 ## 5. Daily ops
 
+### 5.0 Recommended workflow: Claude Code as orchestrator
+
+**Humans do not hand-craft ssh commands to dispatch tasks.** The designed primary usage:
+
+| Role | Does what |
+|------|-----------|
+| **You** | Describe in natural language what you want, inside a Claude Code session. |
+| **Claude Code** | Follows the ask-first-gate rules in `~/.claude/CLAUDE.md` to auto-classify `type` / `assignee` / `review_required`, assembles the full dispatch command, and presents a one-line summary:<br>"Preparing to dispatch `<type>` to `<assignee>`: `<one-line desc>`, review_required=`<y\|n>`, plan-doc=`<path\|none>`. **OK if y, tell me to adjust otherwise.**" |
+| **You** | Reply `y/yes/ok` or ask for adjustments. |
+| **Claude Code** | ssh-dispatches the task via the Bash tool; reports back the task_id. |
+| **You** | Ask "how's the task going?" |
+| **Claude Code** | Proactively runs `mao dashboard` / `mao status` and summarizes. |
+| **Task hits `reviewing`** | Claude Code **proactively** pulls `mao review-bundle` and proposes a contract-audit verdict (pass / fail / needs-clarification + reasons). |
+| **You** | Confirm the verdict. |
+| **Claude Code** | Runs `mao review-result --verdict ...`, then asks "merge?" |
+| **You** | y / n |
+| **Claude Code** | Runs `mao merge` or holds. |
+
+**The human's actual work = describe the goal in natural language + y/n the ask-first summary
++ key review decisions.** No need to remember task_ids, ssh command shapes, or subcommand
+flags.
+
+The direct CLI commands listed in §5.1 – §5.8 below are the **low-level interface**, used for:
+
+- developing / debugging mao itself
+- manual fallback when Claude Code isn't available
+- one-off ops (clearing disk, inspecting old tasks)
+
 ### Dispatch a task
 
 ```bash
