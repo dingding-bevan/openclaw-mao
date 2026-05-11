@@ -1,5 +1,7 @@
 # openclaw-mao Onboarding
 
+> 🌐 **Language**: **English** · [简体中文](ONBOARDING.zh-CN.md)
+
 Minimum-friction guide to install, configure, and operate `openclaw-mao` on a fresh
 OpenClaw host. If you're returning after a break, jump to [Daily ops](#daily-ops).
 

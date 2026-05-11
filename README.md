@@ -1,5 +1,7 @@
 # openclaw-mao
 
+> 🌐 **Language**: **English** · [简体中文](README.zh-CN.md)
+
 Multi-Agent Orchestrator plugin for OpenClaw — dispatch, track, verify, and review multi-agent
 collaboration tasks with branch-per-agent + worktree isolation + git verification + Claude Code
 contract review.
