@@ -10,9 +10,16 @@ interface CliCheck {
   error?: string;
 }
 
+interface TmuxCheck {
+  ok: boolean;
+  version?: string;
+  error?: string;
+}
+
 interface SetupResult {
   ok: boolean;
   cli_checks: CliCheck[];
+  tmux: TmuxCheck;
 }
 
 const PATH_OVERRIDE = `/home/admin/.local/bin:/home/admin/.npm-global/bin:${process.env.PATH ?? ""}`;
@@ -37,6 +44,19 @@ function checkBinary(name: string, binary: string, versionFlag: string): CliChec
   return { name, binary, versionFlag, ok: true, version: ver };
 }
 
+function checkTmuxAvailable(): TmuxCheck {
+  const r = spawnSync("tmux", ["-V"], {
+    encoding: "utf8",
+    timeout: 15_000,
+    env: { ...process.env, PATH: PATH_OVERRIDE },
+  });
+  if (r.status !== 0) {
+    return { ok: false, error: r.stderr?.trim() || r.error?.message || `exit ${r.status}` };
+  }
+  const ver = (r.stdout ?? "").trim();
+  return { ok: true, version: ver };
+}
+
 /**
  * v0.2.0: setup verifies the external CLIs mao dispatches to (kimi + opencode)
  * are reachable on PATH and respond to --version. We no longer register internal
@@ -48,5 +68,6 @@ export function runSetup(_api: OpenClawPluginApi, _workspaceRoot: string): Setup
     checkBinary("kimi", "kimi", "--version"),
     checkBinary("opencode", "opencode", "--version"),
   ];
-  return { ok: checks.every((c) => c.ok), cli_checks: checks };
+  const tmuxCheck = checkTmuxAvailable();
+  return { ok: checks.every((c) => c.ok) && tmuxCheck.ok, cli_checks: checks, tmux: tmuxCheck };
 }
