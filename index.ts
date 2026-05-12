@@ -252,8 +252,8 @@ const maoPlugin = definePluginEntry({
         mao
           .command("continue")
           .description("Reply to an awaiting_clarification task or retry a failed task with a corrective message")
-          .argument("<task-id>", "mao task id (must be in sub_status=awaiting_clarification)")
-          .requiredOption("--message <text>", "your reply to the agent's CLARIFY question")
+          .argument("<task-id>", "mao task id (sub_status must be awaiting_clarification or failed)")
+          .requiredOption("--message <text>", "your reply to the agent's CLARIFY question, or corrective message for a failed task")
           .action(async (taskId: string, opts: { message: string }) => {
             const result = await Dispatcher.continue(api, taskId, opts.message);
             console.log(JSON.stringify({ ...result, task_id: taskId }, null, 2));
