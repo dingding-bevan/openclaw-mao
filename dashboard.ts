@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { Tracker, type TaskRow } from "./tracker.ts";
 
 export interface DashboardOpts {
@@ -58,6 +59,8 @@ export const Dashboard = {
       pad("mode", 6),
       pad("agent", 14),
       pad("sub_status", 22),
+      pad("health", 7),
+      pad("tmux", 5),
       pad("resume", 9),
       pad("age", 8),
       pad("retry", 6),
@@ -72,6 +75,12 @@ export const Dashboard = {
 
     for (const r of rows) {
       const resume = r.worktree_path && r.external_session_id ? "tui-ready" : (r.worktree_path ? "wt-only" : "-");
+      const healthSymbol = r.loop_health === "healthy" ? "✓"
+        : r.loop_health === "degraded" ? "⚠"
+        : "-";
+      const tmuxState = !r.tmux_session_name ? "-"
+        : spawnSync("tmux", ["has-session", "-t", r.tmux_session_name], { encoding: "utf8" }).status === 0
+          ? "●" : "○";
       lines.push(
         [
           pad(shortId(r.task_id), 10),
@@ -80,6 +89,8 @@ export const Dashboard = {
           pad(r.mode ?? "auto", 6),
           pad(r.assignee, 14),
           pad(r.sub_status, 22),
+          pad(healthSymbol, 7),
+          pad(tmuxState, 5),
           pad(resume, 9),
           pad(ageMin(r.dispatched_at ?? r.created_at), 8),
           pad(`${r.retry_run}/${r.retry_review}`, 6),

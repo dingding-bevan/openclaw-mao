@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { readdirSync, statSync } from "node:fs";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { Tracker, type TaskRow } from "./tracker.ts";
 import { Notifier } from "./notifier.ts";
@@ -15,6 +16,10 @@ export interface MonitorOpts {
   verifyMode?: VerifyMode;   // for verifier on auto-promoted manual tasks
   agentBinaries?: { kimi: string; opencode: string };
   worktreeRetentionHours?: number;   // 0 disables retention sweep
+  unhealthyStepThreshold?: number;   // default 80
+  unhealthyNoMtimeMin?: number;      // default 10
+  loopHealthWarmupMin?: number;      // default 3
+  tmuxRetentionMin?: number;         // default 60
 }
 
 export interface MonitorResult {
@@ -25,6 +30,7 @@ export interface MonitorResult {
   worktrees_pruned: { task_id: string; age_hours: number }[];
   failed_count: number;
   disk: { worktrees_bytes: number; threshold_bytes: number; alert: boolean } | null;
+  degraded_loops?: { task_id: string; step_count: number | null; mtime_age_min: number | null }[];
 }
 
 function gitSync(cwd: string, args: string[]): { ok: boolean; stdout: string; stderr: string } {
@@ -57,6 +63,84 @@ function isHumanWorkComplete(worktreePath: string, branch: string, baseBranch: s
 function ageMinutes(iso: string | null): number {
   if (!iso) return 0;
   return Math.floor((Date.now() - new Date(iso).getTime()) / 60_000);
+}
+
+function findLatestWorktreeMtime(worktreePath: string): Date | null {
+  try {
+    let latest = 0;
+    const walk = (dir: string) => {
+      for (const ent of readdirSync(dir, { withFileTypes: true })) {
+        if (ent.name === "node_modules" || ent.name === ".git" || ent.name === "dist") continue;
+        const full = `${dir}/${ent.name}`;
+        if (ent.isDirectory()) walk(full);
+        else {
+          const m = statSync(full).mtimeMs;
+          if (m > latest) latest = m;
+        }
+      }
+    };
+    walk(worktreePath);
+    return latest > 0 ? new Date(latest) : null;
+  } catch {
+    return null;
+  }
+}
+
+function probeOpencodeStepCount(row: TaskRow): number | null {
+  if (row.assignee !== "opencode") return null;
+  if (!row.dispatched_at) return null;
+  const dispatched = new Date(row.dispatched_at);
+  try {
+    const logDir = `${process.env.HOME}/.local/share/opencode/log`;
+    const files = readdirSync(logDir)
+      .filter((f) => f.endsWith(".log"))
+      .map((f) => ({ name: f, mtime: statSync(`${logDir}/${f}`).mtimeMs }))
+      .filter((x) => x.mtime >= dispatched.getTime())
+      .sort((a, b) => b.mtime - a.mtime);
+    if (files.length === 0) return null;
+    const target = `${logDir}/${files[0].name}`;
+    const grep = spawnSync("grep", ["-c", "service=session.prompt status=completed", target], { encoding: "utf8" });
+    if (grep.status !== 0 && grep.status !== 1) return null;
+    return parseInt((grep.stdout ?? "0").trim(), 10) || 0;
+  } catch {
+    return null;
+  }
+}
+
+interface ProbeResult {
+  loop_health: "healthy" | "degraded" | "unknown";
+  step_count: number | null;
+  worktree_mtime: Date | null;
+  mtime_age_min: number | null;
+  reason: string;
+}
+
+function probeLoopHealth(row: TaskRow, opts: MonitorOpts): ProbeResult {
+  const elapsedMin = row.dispatched_at ? Math.floor((Date.now() - new Date(row.dispatched_at).getTime()) / 60_000) : 0;
+  const warmupMin = opts.loopHealthWarmupMin ?? 3;
+  if (elapsedMin < warmupMin) {
+    return { loop_health: "unknown", step_count: null, worktree_mtime: null, mtime_age_min: null, reason: `warmup (elapsed ${elapsedMin}m < ${warmupMin}m)` };
+  }
+  const stepCount = probeOpencodeStepCount(row);
+  const mtime = row.worktree_path ? findLatestWorktreeMtime(row.worktree_path) : null;
+  const mtimeAgeMin = mtime ? Math.floor((Date.now() - mtime.getTime()) / 60_000) : null;
+  const stepThreshold = opts.unhealthyStepThreshold ?? 80;
+  const mtimeStaleMin = opts.unhealthyNoMtimeMin ?? 10;
+
+  if (stepCount === null) {
+    if (mtimeAgeMin !== null && mtimeAgeMin >= mtimeStaleMin && elapsedMin >= mtimeStaleMin + warmupMin) {
+      return { loop_health: "degraded", step_count: null, worktree_mtime: mtime, mtime_age_min: mtimeAgeMin, reason: `worktree idle ${mtimeAgeMin}m (single signal: kimi/unknown step_count)` };
+    }
+    return { loop_health: "unknown", step_count: null, worktree_mtime: mtime, mtime_age_min: mtimeAgeMin, reason: "step_count unavailable" };
+  }
+
+  if (stepCount >= stepThreshold * 1.5) {
+    return { loop_health: "degraded", step_count: stepCount, worktree_mtime: mtime, mtime_age_min: mtimeAgeMin, reason: `step_count=${stepCount} > 1.5x threshold` };
+  }
+  if (stepCount >= stepThreshold && (mtimeAgeMin === null || mtimeAgeMin >= mtimeStaleMin)) {
+    return { loop_health: "degraded", step_count: stepCount, worktree_mtime: mtime, mtime_age_min: mtimeAgeMin, reason: `step_count=${stepCount} AND worktree idle ${mtimeAgeMin}m` };
+  }
+  return { loop_health: "healthy", step_count: stepCount, worktree_mtime: mtime, mtime_age_min: mtimeAgeMin, reason: "ok" };
 }
 
 export const Monitor = {
@@ -179,6 +263,28 @@ export const Monitor = {
       }
     }
 
+    // 6. Loop health probe: scan running tasks, detect degraded loops (one notification per task)
+    const runningForHealth = Tracker.list({ sub_status: "running" });
+    for (const t of runningForHealth) {
+      const probe = probeLoopHealth(t, opts);
+      Tracker.update(t.task_id, {
+        loop_health: probe.loop_health,
+        step_count: probe.step_count,
+        last_worktree_mtime: probe.worktree_mtime ? probe.worktree_mtime.toISOString() : null,
+      });
+      if (probe.loop_health === "degraded" && !t.loop_health_notified_at) {
+        api.logger.warn(`openclaw-mao: monitor LOOP_DEGRADED task=${t.task_id} reason="${probe.reason}"`);
+        Notifier.sendDiscord(
+          api,
+          `⚠️ mao LOOP DEGRADED: ${t.task_id} (${t.type}, ${t.assignee}) — ${probe.reason}. ` +
+          `Inspect via \`openclaw mao status ${t.task_id}\` or attach TUI: \`openclaw mao open ${t.task_id}\``,
+        );
+        Tracker.update(t.task_id, { loop_health_notified_at: new Date().toISOString() });
+        out.degraded_loops = out.degraded_loops ?? [];
+        out.degraded_loops.push({ task_id: t.task_id, step_count: probe.step_count, mtime_age_min: probe.mtime_age_min });
+      }
+    }
+
     // 5. Disk usage check on workspaceRoot/worktrees (best-effort via `du -sb`)
     if (opts.workspaceRoot && opts.diskAlertGiB !== undefined && opts.diskAlertGiB > 0) {
       const wtPath = `${opts.workspaceRoot}/worktrees`;
@@ -192,6 +298,23 @@ export const Monitor = {
           api.logger.warn(`openclaw-mao: monitor disk usage ${gib}GiB >= ${opts.diskAlertGiB}GiB threshold`);
           Notifier.sendDiscord(api, `⚠️ mao disk: worktrees/ at ${gib}GiB (threshold ${opts.diskAlertGiB}GiB) — consider \`mao prune --apply\``);
         }
+      }
+    }
+
+    // 7. Tmux session retention: kill sessions belonging to terminal tasks older than retention
+    const tmuxRetentionMin = opts.tmuxRetentionMin ?? 60;
+    const terminalForTmux: TaskRow["sub_status"][] = ["completed", "failed", "cancelled"];
+    const terminalTasks = (Tracker.list() as TaskRow[]).filter(
+      (t) => t.tmux_session_name && terminalForTmux.includes(t.sub_status) && t.completed_at,
+    );
+    for (const t of terminalTasks) {
+      const age = (Date.now() - new Date(t.completed_at!).getTime()) / 60_000;
+      if (age < tmuxRetentionMin) continue;
+      const hasSess = spawnSync("tmux", ["has-session", "-t", t.tmux_session_name!], { encoding: "utf8" });
+      if (hasSess.status !== 0) continue;
+      const kill = spawnSync("tmux", ["kill-session", "-t", t.tmux_session_name!], { encoding: "utf8" });
+      if (kill.status === 0) {
+        api.logger.info(`openclaw-mao: monitor killed tmux session ${t.tmux_session_name} (task ${t.task_id} terminal age=${Math.floor(age)}m)`);
       }
     }
 
