@@ -109,6 +109,7 @@ interface SpawnTurnIn {
   timeoutMs: number;
   isResume: boolean;      // first turn: false; subsequent: true (continue session)
   binaries: { kimi: string; opencode: string };
+  sessionName?: string;   // Wave 3: tmux session name (undefined = old direct-spawn path)
 }
 
 interface SpawnTurnOut {
@@ -121,7 +122,54 @@ interface SpawnTurnOut {
 
 function stripAnsi(s: string): string {
   // eslint-disable-next-line no-control-regex
-  return s.replace(/\[[0-9;]*[a-zA-Z]/g, "");
+  return s.replace(/\[\[[0-9;]*[a-zA-Z]/g, "");
+}
+
+/* ── Wave 3 tmux helpers ───────────────────────────────────────────── */
+
+function shortTaskId(taskId: string): string {
+  return taskId.slice(-6);
+}
+
+function shellEscape(s: string): string {
+  return `'${s.replace(/'/g, `'\\''`)}'`;
+}
+
+function ensureTmuxSession(taskId: string): string {
+  const short = shortTaskId(taskId);
+  let name = `mao-${short}`;
+  let r = spawnSync("tmux", ["has-session", "-t", name], { encoding: "utf8" });
+  if (r.status === 0) return name;
+  r = spawnSync("tmux", ["new-session", "-d", "-s", name, "-x", "200", "-y", "50", "bash"], { encoding: "utf8" });
+  if (r.status !== 0) {
+    name = `mao-${short}-${Date.now() % 10000}`;
+    spawnSync("tmux", ["new-session", "-d", "-s", name, "-x", "200", "-y", "50", "bash"], { encoding: "utf8" });
+  }
+  return name;
+}
+
+async function pollLogUntilSentinelOrTimeout(
+  path: string,
+  timeoutMs: number,
+): Promise<{ content: string; exitCode: number; timedOut: boolean }> {
+  const start = Date.now();
+  let content = "";
+  let exitCode = -1;
+  const sentinelRe = /__MAO_TURN_EXIT_(\d+)_END__/;
+  const { readFile } = await import("node:fs/promises");
+  while (Date.now() - start < timeoutMs) {
+    try {
+      content = await readFile(path, "utf8");
+      const m = content.match(sentinelRe);
+      if (m) {
+        exitCode = parseInt(m[1], 10);
+        content = content.replace(sentinelRe, "").trimEnd();
+        return { content, exitCode, timedOut: false };
+      }
+    } catch { /* file may not exist yet */ }
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+  return { content, exitCode: -1, timedOut: true };
 }
 
 /**
@@ -203,6 +251,7 @@ type TurnLoopOutcome =
 interface TurnLoopInput {
   initialMessage: string;
   totalTimeoutMs: number;
+  sessionName?: string;
 }
 
 async function runTurnLoop(
@@ -231,6 +280,7 @@ async function runTurnLoop(
       timeoutMs: remaining,
       isResume: turnIdx > 1,           // continue cwd session for turn 2+
       binaries: cfg.agentBinaries,
+      sessionName: opts.sessionName,
     });
     if (out.killedByTimeout) return { kind: "timeout" };
     if (out.exitCode !== 0) return { kind: "agent_error", error: out.stderr || `agent exit ${out.exitCode}` };
@@ -260,14 +310,11 @@ function spawnAgentTurn(input: SpawnTurnIn): Promise<SpawnTurnOut> {
     let args: string[];
 
     if (input.agent === "kimi") {
-      // `kimi --quiet -w <cwd> [-C] -p <message>`
-      // -C continues the most recent session in cwd (used for turn 2+).
       cmd = input.binaries.kimi;
       args = ["--quiet", "-w", cwd];
       if (input.isResume) args.push("-C");
       args.push("-p", input.message);
     } else if (input.agent === "opencode") {
-      // `opencode run <message> --dir <cwd> --dangerously-skip-permissions [--continue]`
       cmd = input.binaries.opencode;
       args = ["run", input.message, "--dir", cwd, "--dangerously-skip-permissions", "--format", "default"];
       if (input.isResume) args.push("--continue");
@@ -282,12 +329,35 @@ function spawnAgentTurn(input: SpawnTurnIn): Promise<SpawnTurnOut> {
       return;
     }
 
+    if (input.sessionName) {
+      const logFile = `/tmp/${input.sessionName}-turn-${Date.now()}.log`;
+      const shellLine = [
+        `export PATH=/home/admin/.local/bin:/home/admin/.npm-global/bin:$PATH`,
+        `cd ${shellEscape(cwd)}`,
+        `${shellEscape(cmd)} ${args.map(shellEscape).join(" ")} 2>&1 | tee ${shellEscape(logFile)}`,
+        `echo "__MAO_TURN_EXIT_$?_END__"`,
+      ].join(" && ");
+
+      spawnSync("tmux", ["send-keys", "-t", input.sessionName, shellLine, "Enter"], { encoding: "utf8" });
+
+      void (async () => {
+        const result = await pollLogUntilSentinelOrTimeout(logFile, input.timeoutMs);
+        resolve({
+          exitCode: result.exitCode,
+          stdout: result.content,
+          stderr: "",
+          killedByTimeout: result.timedOut,
+          finalText: extractFinalText(result.content, input.agent),
+        });
+      })();
+      return;
+    }
+
     const child = spawn(cmd, args, {
       stdio: ["ignore", "pipe", "pipe"],
       cwd,
       env: {
         ...process.env,
-        // Plugin runs under OpenClaw gateway whose PATH does not include user-local installs.
         PATH: `/home/admin/.local/bin:/home/admin/.npm-global/bin:${process.env.PATH ?? ""}`,
       },
     });
@@ -426,10 +496,13 @@ export const Dispatcher = {
     }
 
     // Phase: running — multi-turn loop until DONE / CLARIFY / max turns / timeout
-    Tracker.update(row.task_id, { sub_status: "running" });
+    const sessionName = ensureTmuxSession(row.task_id);
+    Tracker.update(row.task_id, { sub_status: "running", tmux_session_name: sessionName });
+    api.logger.info(`openclaw-mao: tmux session ${sessionName} ready for task ${row.task_id}`);
     const outcome = await runTurnLoop(api, row, worktreePath, {
       initialMessage: renderInitialPrompt({ ...row, worktree_path: worktreePath }),
       totalTimeoutMs: timeoutMs,
+      sessionName,
     });
 
     await Dispatcher.handleTurnOutcome(api, Tracker.get(row.task_id)!, worktreePath, outcome, cfg.verifyMode);
@@ -471,6 +544,16 @@ export const Dispatcher = {
     Tracker.update(row.task_id, { sub_status: "verifying" });
     const verdict = Verifier.verify(worktreePath, row.branch!, verifyMode);
     if (!verdict.ok) {
+      if (verdict.reason === "uncommitted_changes" && row.retry_run < 1) {
+        api.logger.warn(
+          `openclaw-mao: task ${row.task_id} verify=uncommitted_changes → auto-retry (zero-commit antipattern), retry_run will be ${row.retry_run + 1}`,
+        );
+        Tracker.update(row.task_id, { sub_status: "failed", error: `verify uncommitted_changes: ${verdict.detail ?? ""}` });
+        void Dispatcher.retryFromFailure(api, Tracker.get(row.task_id)!).catch((err) =>
+          api.logger.error(`openclaw-mao: auto-retry threw task=${row.task_id}: ${(err as Error).message}`),
+        );
+        return;
+      }
       Tracker.update(row.task_id, {
         sub_status: "failed",
         error: `verify ${verdict.reason}: ${verdict.detail ?? ""}`,
@@ -562,14 +645,23 @@ export const Dispatcher = {
     await Dispatcher.handleTurnOutcome(api, Tracker.get(taskId)!, row.worktree_path, outcome, cfg.verifyMode);
   },
 
-  // User answers a CLARIFY question. The task resumes the multi-turn loop with the user's reply.
   async continue(api: OpenClawPluginApi, taskId: string, userMessage: string): Promise<{ ok: boolean; error?: string }> {
     const row = Tracker.get(taskId);
     if (!row) return { ok: false, error: `task ${taskId} not found` };
-    if (row.sub_status !== "awaiting_clarification") {
-      return { ok: false, error: `task ${taskId} sub_status=${row.sub_status}, expected awaiting_clarification` };
+
+    if (row.sub_status === "awaiting_clarification") {
+      return Dispatcher._continueClarification(api, row, userMessage);
     }
-    if (!row.worktree_path) return { ok: false, error: `task ${taskId} has no worktree_path` };
+
+    if (row.sub_status === "failed") {
+      return Dispatcher.retryFromFailure(api, row, userMessage);
+    }
+
+    return { ok: false, error: `task ${taskId} sub_status=${row.sub_status}, expected awaiting_clarification or failed` };
+  },
+
+  async _continueClarification(api: OpenClawPluginApi, row: TaskRow, userMessage: string): Promise<{ ok: boolean; error?: string }> {
+    if (!row.worktree_path) return { ok: false, error: `task ${row.task_id} has no worktree_path` };
 
     const cfg = readConfig(api);
     const followUp = [
@@ -579,17 +671,73 @@ export const Dispatcher = {
       `When you've finished, reply "DONE: <summary>". If you still need clarification, reply "CLARIFY: <question>".`,
     ].join("\n");
 
-    Tracker.update(taskId, { sub_status: "running", clarify_question: null });
+    Tracker.update(row.task_id, { sub_status: "running", clarify_question: null });
 
     void (async () => {
-      const outcome = await runTurnLoop(api, Tracker.get(taskId)!, row.worktree_path!, {
+      const outcome = await runTurnLoop(api, Tracker.get(row.task_id)!, row.worktree_path!, {
         initialMessage: followUp,
         totalTimeoutMs: 600_000,
       });
-      await Dispatcher.handleTurnOutcome(api, Tracker.get(taskId)!, row.worktree_path!, outcome, cfg.verifyMode);
-    })().catch((err) => api.logger.error(`openclaw-mao: continue task=${taskId} threw: ${(err as Error).message}`));
+      await Dispatcher.handleTurnOutcome(api, Tracker.get(row.task_id)!, row.worktree_path!, outcome, cfg.verifyMode);
+    })().catch((err) => api.logger.error(`openclaw-mao: continue task=${row.task_id} threw: ${(err as Error).message}`));
 
     return { ok: true };
+  },
+
+  async retryFromFailure(
+    api: OpenClawPluginApi,
+    row: TaskRow,
+    userMessage?: string,
+  ): Promise<{ ok: boolean; error?: string }> {
+    if (row.sub_status !== "failed") {
+      return { ok: false, error: `expected failed, got ${row.sub_status}` };
+    }
+    if (!row.worktree_path) {
+      return { ok: false, error: "task has no worktree_path (cannot retry)" };
+    }
+    if (row.retry_run >= 1) {
+      return { ok: false, error: `retry budget exhausted (retry_run=${row.retry_run})` };
+    }
+
+    const cfg = readConfig(api);
+    Tracker.update(row.task_id, {
+      sub_status: "running",
+      retry_run: row.retry_run + 1,
+      error: null,
+      completed_at: null,
+    });
+
+    const retryMessage = userMessage ?? Dispatcher._autoRetryMessage(row.error ?? "");
+
+    void (async () => {
+      const outcome = await runTurnLoop(api, Tracker.get(row.task_id)!, row.worktree_path!, {
+        initialMessage: retryMessage,
+        totalTimeoutMs: 600_000,
+      });
+      await Dispatcher.handleTurnOutcome(api, Tracker.get(row.task_id)!, row.worktree_path!, outcome, cfg.verifyMode);
+    })().catch((err) => api.logger.error(`openclaw-mao: retryFromFailure task=${row.task_id} threw: ${(err as Error).message}`));
+
+    return { ok: true };
+  },
+
+  _autoRetryMessage(priorError: string): string {
+    if (priorError.includes("uncommitted_changes")) {
+      return [
+        `[RETRY — your previous DONE was missing the commit step]`,
+        "",
+        `You wrote files but never ran git commit. The task contract requires:`,
+        `  1. git add . on the worktree`,
+        `  2. git commit -m "<conventional message>"`,
+        `  3. git push origin HEAD`,
+        "",
+        `Please do those three steps now, then reply "DONE: <summary>".`,
+        `Do NOT modify code further unless you must fix a real issue.`,
+      ].join("\n");
+    }
+    if (priorError.includes("commits_not_pushed")) {
+      return `[RETRY] Your commits exist locally but were never pushed. Run \`git push origin HEAD\` and reply DONE: <summary>.`;
+    }
+    return `[RETRY] Your previous attempt failed with: "${priorError.slice(0, 200)}". Please address and reply DONE: <summary>.`;
   },
 
   cleanup(api: OpenClawPluginApi, taskId: string): { ok: boolean; removedWorktree: boolean } {

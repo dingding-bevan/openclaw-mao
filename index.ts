@@ -1,5 +1,6 @@
 // openclaw-mao plugin entry.
 
+import { spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
@@ -250,7 +251,7 @@ const maoPlugin = definePluginEntry({
 
         mao
           .command("continue")
-          .description("Reply to an awaiting_clarification task; agent resumes with your message")
+          .description("Reply to an awaiting_clarification task or retry a failed task with a corrective message")
           .argument("<task-id>", "mao task id (must be in sub_status=awaiting_clarification)")
           .requiredOption("--message <text>", "your reply to the agent's CLARIFY question")
           .action(async (taskId: string, opts: { message: string }) => {
@@ -301,7 +302,7 @@ const maoPlugin = definePluginEntry({
 
         mao
           .command("accept")
-          .description("Force ff-merge a task into baseBranch even if its sub_status is failed/awaiting_*/reviewing. Useful when state machine got stuck but you've manually reviewed the diff and are happy with it.")
+          .description("Force ff-merge a task into baseBranch even if sub_status is failed/awaiting_*/reviewing. Use when you've manually reviewed the diff. Common case: agent reported DONE but verify failed on uncommitted_changes (zero-commit antipattern) — first `git add . && git commit && git push` on the task branch, then `mao accept` to advance the state machine and run CI.")
           .argument("<task-id>", "mao task id")
           .option("--no-cleanup", "keep worktree+branch after merge")
           .option("--json", "JSON output")
@@ -340,6 +341,7 @@ const maoPlugin = definePluginEntry({
           .action(() => {
             const cfg = (api.pluginConfig ?? {}) as Record<string, unknown>;
             const bins = (cfg.agentBinaries as { kimi?: string; opencode?: string } | undefined) ?? {};
+            const lh = (cfg.loopHealth ?? {}) as Record<string, number>;
             const result = Monitor.tick(api, {
               stuckHeartbeatMin: (cfg.stuckHeartbeatMin as number) ?? 30,
               verifyingTimeoutMin: (cfg.verifyingTimeoutMin as number) ?? 5,
@@ -349,13 +351,17 @@ const maoPlugin = definePluginEntry({
               diskAlertGiB: (cfg.diskAlertGiB as number | undefined) ?? 5,
               worktreeRetentionHours: (cfg.worktreeRetentionHours as number | undefined) ?? 24,
               agentBinaries: { kimi: bins.kimi ?? "kimi", opencode: bins.opencode ?? "opencode" },
+              unhealthyStepThreshold: lh.unhealthyStepThreshold,
+              unhealthyNoMtimeMin: lh.unhealthyNoMtimeMin,
+              loopHealthWarmupMin: lh.loopHealthWarmupMin,
+              tmuxRetentionMin: (cfg.tmuxRetentionMin as number) ?? 60,
             });
             console.log(JSON.stringify(result, null, 2));
           });
 
         mao
           .command("open")
-          .description("Print a one-line ssh -t command to resume the task's tui session (copy-paste from your mac)")
+          .description("Print a one-line ssh -t command to attach the task's tmux session (copy-paste from your mac or VPS workbench)")
           .argument("<task-id>", "mao task id")
           .option("--json", "JSON output")
           .option("--vps <user@host>", "override default VPS host", "admin@47.85.199.78")
@@ -366,47 +372,35 @@ const maoPlugin = definePluginEntry({
               process.exitCode = 1;
               return;
             }
-            const fs = require("node:fs") as typeof import("node:fs");
-            const wtExists = !!row.worktree_path && fs.existsSync(row.worktree_path);
-            if (!wtExists) {
-              const out = {
+            if (!row.tmux_session_name) {
+              console.log(JSON.stringify({
                 ok: false,
-                error: "worktree no longer present (likely pruned past retention)",
-                task_id: taskId,
-                last_known_worktree: row.worktree_path,
-                hint: "task is too old to resume in tui; inspect git history of branch instead",
-              };
-              console.log(JSON.stringify(out, null, 2));
+                error: "task has no tmux session (likely created before Wave 3, or session was killed)",
+                hint: "Use `mao status` to inspect; if worktree still exists, ssh directly: " +
+                      `ssh -t ${opts.vps} "cd ${row.worktree_path}"`,
+              }, null, 2));
               process.exitCode = 1;
               return;
             }
-            const tuiCmd = row.assignee === "kimi" ? "kimi" : "opencode";
-            const sidPart =
-              row.external_session_id
-                ? (row.assignee === "kimi"
-                    ? `kimi -r ${row.external_session_id}`
-                    : `opencode --session ${row.external_session_id}`)
-                : `${tuiCmd} -c`; // fallback: continue cwd's most recent session
-            const sshCmd = `ssh -t ${opts.vps} "cd ${row.worktree_path} && ${sidPart}"`;
+            const hasSession = spawnSync("tmux", ["has-session", "-t", row.tmux_session_name], { encoding: "utf8" });
+            const alive = hasSession.status === 0;
 
+            const sshCmd = `ssh -t ${opts.vps} "tmux attach -t ${row.tmux_session_name}"`;
             if (opts.json) {
-              console.log(JSON.stringify({
-                ok: true,
-                task_id: taskId,
-                assignee: row.assignee,
-                worktree: row.worktree_path,
-                external_session_id: row.external_session_id,
-                ssh_command: sshCmd,
-              }, null, 2));
+              console.log(JSON.stringify({ ok: true, task_id: taskId, tmux_session_name: row.tmux_session_name, alive, ssh_command: sshCmd }, null, 2));
               return;
             }
-            console.log(`Resume ${taskId} (${row.assignee}, ${row.sub_status}) in tui:`);
+            console.log(`Attach to ${taskId} (tmux session: ${row.tmux_session_name}, ${alive ? "alive" : "dead"}):`);
             console.log("");
             console.log(`  ${sshCmd}`);
-            if (!row.external_session_id) {
-              console.log("");
-              console.log("  (note: no external session id recorded — falling back to `-c` to continue the most recent cwd session)");
+            console.log("");
+            if (!alive) {
+              console.log(`  WARNING: tmux session not currently running. The agent process has exited.`);
+              console.log(`  You may still attach to a detached session if it hasn't been swept by monitor.`);
             }
+            console.log("");
+            console.log(`Detach inside tmux: Ctrl-b then d   (session keeps running)`);
+            console.log(`Kill from outside:  ssh ${opts.vps} "tmux kill-session -t ${row.tmux_session_name}"`);
           });
 
         mao

@@ -41,6 +41,11 @@ export interface TaskRow {
   clarify_question: string | null;
   mode: DispatchMode;
   external_session_id: string | null;   // v0.2.1 wave 2: opencode/kimi session uuid for tui resume
+  loop_health: "healthy" | "degraded" | "unknown" | null;
+  step_count: number | null;
+  last_worktree_mtime: string | null;
+  loop_health_notified_at: string | null;
+  tmux_session_name: string | null;
   created_at: string;
   dispatched_at: string | null;
   completed_at: string | null;
@@ -85,6 +90,15 @@ const SCHEMA = [
 
   // v5: v0.2.1 wave 2 — external CLI session id for tui resume
   `ALTER TABLE tasks ADD COLUMN external_session_id TEXT;`,
+
+  // v6: Wave 2 loop health
+  `ALTER TABLE tasks ADD COLUMN loop_health TEXT;
+   ALTER TABLE tasks ADD COLUMN step_count INTEGER;
+   ALTER TABLE tasks ADD COLUMN last_worktree_mtime TEXT;
+   ALTER TABLE tasks ADD COLUMN loop_health_notified_at TEXT;`,
+
+  // v7: Wave 3 tmux session wrap
+  `ALTER TABLE tasks ADD COLUMN tmux_session_name TEXT;`,
 ];
 
 let handle: SqliteHandle | null = null;
@@ -99,9 +113,20 @@ export const Tracker = {
     return handle !== null;
   },
 
-  insert(row: Omit<TaskRow, "created_at" | "sub_status" | "retry_run" | "retry_review" | "review_required"> & {
+  insert(row: Omit<TaskRow, "created_at" | "sub_status" | "retry_run" | "retry_review" | "review_required" | "review_verdict" | "review_feedback" | "reviewed_at" | "clarify_question" | "mode" | "external_session_id" | "loop_health" | "step_count" | "last_worktree_mtime" | "loop_health_notified_at" | "tmux_session_name"> & {
     review_required?: boolean;
     sub_status?: SubStatus;
+    review_verdict?: TaskRow["review_verdict"];
+    review_feedback?: string | null;
+    reviewed_at?: string | null;
+    clarify_question?: string | null;
+    mode?: DispatchMode;
+    external_session_id?: string | null;
+    loop_health?: TaskRow["loop_health"];
+    step_count?: number | null;
+    last_worktree_mtime?: string | null;
+    loop_health_notified_at?: string | null;
+    tmux_session_name?: string | null;
   }): TaskRow {
     if (!handle) throw new Error("Tracker not initialized");
     const created_at = new Date().toISOString();
@@ -111,6 +136,17 @@ export const Tracker = {
       review_required: row.review_required ? 1 : 0,
       retry_run: 0,
       retry_review: 0,
+      review_verdict: row.review_verdict ?? null,
+      review_feedback: row.review_feedback ?? null,
+      reviewed_at: row.reviewed_at ?? null,
+      clarify_question: row.clarify_question ?? null,
+      mode: row.mode ?? "auto",
+      external_session_id: row.external_session_id ?? null,
+      loop_health: row.loop_health ?? null,
+      step_count: row.step_count ?? null,
+      last_worktree_mtime: row.last_worktree_mtime ?? null,
+      loop_health_notified_at: row.loop_health_notified_at ?? null,
+      tmux_session_name: row.tmux_session_name ?? null,
       created_at,
     };
     handle.db
@@ -129,8 +165,16 @@ export const Tracker = {
           @created_at, @dispatched_at, @completed_at
         )`,
       )
-      .run({ ...full, review_verdict: null, review_feedback: null, reviewed_at: null, clarify_question: null, mode: full.mode ?? "auto", external_session_id: null });
-    return full;
+      .run({
+        ...full,
+        review_verdict: full.review_verdict ?? null,
+        review_feedback: full.review_feedback ?? null,
+        reviewed_at: full.reviewed_at ?? null,
+        clarify_question: full.clarify_question ?? null,
+        mode: full.mode ?? "auto",
+        external_session_id: full.external_session_id ?? null,
+      });
+    return { ...full, loop_health: null, step_count: null, last_worktree_mtime: null, loop_health_notified_at: null, tmux_session_name: null };
   },
 
   get(taskId: string): TaskRow | null {
