@@ -629,6 +629,17 @@ export const Dispatcher = {
       return;
     }
 
+    // Manual-mode tasks don't get a tmux session at dispatch (--manual returns
+    // immediately for the user to drive TUI). On review-fail retry we DO spawn
+    // an agent, so attach a tmux session now so the user can `mao open` and
+    // watch. Auto-mode tasks already have row.tmux_session_name set by Dispatcher.run.
+    let sessionName = row.tmux_session_name ?? undefined;
+    if (row.mode === "manual" && !sessionName) {
+      sessionName = ensureTmuxSession(row.task_id);
+      Tracker.update(taskId, { tmux_session_name: sessionName });
+      api.logger.info(`openclaw-mao: task ${taskId} → tmux session ${sessionName} attached for manual retry`);
+    }
+
     const cfg = readConfig(api);
     const feedbackMsg = [
       `[REVIEW FEEDBACK — please incorporate and continue]`,
@@ -641,6 +652,7 @@ export const Dispatcher = {
     const outcome = await runTurnLoop(api, row, row.worktree_path, {
       initialMessage: feedbackMsg,
       totalTimeoutMs: 600_000,
+      sessionName,
     });
     await Dispatcher.handleTurnOutcome(api, Tracker.get(taskId)!, row.worktree_path, outcome, cfg.verifyMode);
   },
