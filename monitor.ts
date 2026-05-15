@@ -147,20 +147,27 @@ export const Monitor = {
   tick(api: OpenClawPluginApi, opts: MonitorOpts): MonitorResult {
     const out: MonitorResult = { ran_at: new Date().toISOString(), stuck_running: [], stuck_verifying: [], human_work_promoted: [], worktrees_pruned: [], failed_count: 0, disk: null };
 
-    // 1. Running > stuckHeartbeatMin → mark failed (treated as `lost` per OpenClaw TaskFlow status enum)
+    // 1. Running tasks: stuck = worktree idle > stuckHeartbeatMin (not absolute task age,
+    //    so retries / long-running but actively-committing tasks don't get killed)
     const running = Tracker.list({ sub_status: "running" });
     for (const t of running) {
-      const age = ageMinutes(t.dispatched_at);
-      if (age >= opts.stuckHeartbeatMin) {
+      const mtime = t.worktree_path ? findLatestWorktreeMtime(t.worktree_path) : null;
+      const idleMin = mtime
+        ? Math.floor((Date.now() - mtime.getTime()) / 60_000)
+        : ageMinutes(t.dispatched_at); // fallback when worktree missing
+      if (idleMin >= opts.stuckHeartbeatMin) {
+        const reason = mtime
+          ? `STUCK: worktree idle ${idleMin}min (threshold ${opts.stuckHeartbeatMin}min, mapped to TaskFlow.lost)`
+          : `STUCK: no worktree mtime, fallback age ${idleMin}min (threshold ${opts.stuckHeartbeatMin}min)`;
         Tracker.update(t.task_id, {
           sub_status: "failed",
-          error: `STUCK: running > ${opts.stuckHeartbeatMin}min (age=${age}min, mapped to TaskFlow.lost)`,
+          error: reason,
           completed_at: new Date().toISOString(),
         });
-        out.stuck_running.push({ task_id: t.task_id, age_min: age });
+        out.stuck_running.push({ task_id: t.task_id, age_min: idleMin });
         out.failed_count += 1;
-        api.logger.warn(`openclaw-mao: monitor STUCK task=${t.task_id} (running ${age}min) → failed`);
-        Notifier.sendDiscord(api, `⚠️ mao STUCK: ${t.task_id} (${t.type}) running ${age}min, agent=${t.assignee}`);
+        api.logger.warn(`openclaw-mao: monitor STUCK task=${t.task_id} (idle ${idleMin}min) → failed`);
+        Notifier.sendDiscord(api, `⚠️ mao STUCK: ${t.task_id} (${t.type}) idle ${idleMin}min, agent=${t.assignee}`);
       }
     }
 
